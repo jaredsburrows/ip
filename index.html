@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <meta http-equiv="content-style-type" content="text/css" />
+  <meta http-equiv="content-script-type" content="text/javascript" />
+  <meta http-equiv="content-language" content="en" />
+  <meta http-equiv="pragma" content="no-cache" />
+  <meta http-equiv="cache-control" content="no-cache" />
+  <meta name="description" content="ip address info" />
+  <meta name="keywords" content="ip address info" />
+  <meta name="author" content="Jared Burrows" />
+  <link rel="shortcut icon" href="favicon.ico" />
+  <link rel="canonical" href="https://TBD.io/">
+  <title>IP Address Info - TBD</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <head>
+    <style>
+      table,
+      th,
+      td {
+        border: 1px solid black;
+        border-collapse: collapse;
+      }
+
+    </style>
+  </head>
+
+  <body>
+    <h2>Infos</h2>
+
+    <table>
+      <tr>
+        <td>IP Address</td>
+        <td id="ip-address"></td>
+      </tr>
+      <tr>
+        <td>User Agent</td>
+        <td id="user-agent"></td>
+      </tr>
+      <tr>
+        <td>Language</td>
+        <td id="language"></td>
+      </tr>
+      <tr>
+        <td>Referer</td>
+        <td id="referer"></td>
+      </tr>
+      <tr>
+        <td>Method</td>
+        <td id="method"></td>
+      </tr>
+      <tr>
+        <td>Encoding</td>
+        <td id="encoding"></td>
+      </tr>
+      <tr>
+        <td>MIME Type</td>
+        <td id="mime-type"></td>
+      </tr>
+      <tr>
+        <td>Charset</td>
+        <td id="charset"></td>
+      </tr>
+      <tr>
+        <td>X-Forwarded-For</td>
+        <td id="x-forwarded-for"></td>
+      </tr>
+
+
+    </table>
+
+    <p id="dump"></p>
+    <p id="dump2"></p>
+
+    <script>
+      document.getElementById("ip-address").innerHTML = "?";
+      document.getElementById("user-agent").innerHTML = navigator.userAgent;
+      document.getElementById("language").innerHTML = navigator.language;
+      document.getElementById("referer").innerHTML = document.referrer;
+      document.getElementById("method").innerHTML = "?";
+      document.getElementById("encoding").innerHTML = "?";
+      document.getElementById("mime-type").innerHTML = "?";
+      document.getElementById("charset").innerHTML = document.characterSet;
+      document.getElementById("x-forwarded-for").innerHTML = "?";
+
+
+      function getHeaders() {
+        var req = new XMLHttpRequest();
+        req.open('GET', document.location, false);
+        req.send(null);
+
+        // associate array to store all values
+        var data = new Object();
+
+        // get all headers in one call and parse each item
+        var headers = req.getAllResponseHeaders().toLowerCase();
+        var aHeaders = headers.split('\n');
+        var i = 0;
+        for (i = 0; i < aHeaders.length; i++) {
+          var thisItem = aHeaders[i];
+          var key = thisItem.substring(0, thisItem.indexOf(':'));
+          var value = thisItem.substring(thisItem.indexOf(':') + 1);
+          data[key] = value;
+        }
+
+        // get referer
+        var referer = document.referrer;
+        data["Referer"] = referer;
+
+        //get useragent
+        var useragent = navigator.userAgent;
+        data["UserAgent"] = useragent;
+
+
+        //extra code to display the values in html
+        var display = "";
+        for (var key in data) {
+          if (key != "")
+            display += "<b>" + key + "</b> : " + data[key] + "<br>";
+        }
+
+        document.getElementById("dump").innerHTML = display;
+      }
+
+      getHeaders();
+
+      function text(url) {
+        return fetch(url).then(res => res.text());
+      }
+
+      text('https://www.cloudflare.com/cdn-cgi/trace').then(data => {
+        let ipRegex = /[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}/
+        let ip = data.match(ipRegex)[0];
+        console.log(ip);
+      });
+
+    </script>
+
+  </body>
+
+</html>
+
+
