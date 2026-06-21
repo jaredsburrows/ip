@@ -1,144 +1,282 @@
 <!DOCTYPE html>
-<html>
-  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-  <meta http-equiv="content-style-type" content="text/css" />
-  <meta http-equiv="content-script-type" content="text/javascript" />
-  <meta http-equiv="content-language" content="en" />
-  <meta http-equiv="pragma" content="no-cache" />
-  <meta http-equiv="cache-control" content="no-cache" />
-  <meta name="description" content="ip address info" />
-  <meta name="keywords" content="ip address info" />
-  <meta name="author" content="Jared Burrows" />
-  <link rel="shortcut icon" href="favicon.ico" />
-  <link rel="canonical" href="https://TBD.io/">
-  <title>IP Address Info - TBD</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-
+<html lang="en">
   <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Shows your IP address and client/request information.">
+    <meta name="author" content="Jared Burrows">
+    <link rel="canonical" href="https://TBD.io/">
+    <link rel="icon" href="favicon.ico" sizes="any">
+    <title>IP Address Info - TBD</title>
     <style>
-      table,
-      th,
-      td {
-        border: 1px solid black;
-        border-collapse: collapse;
+      :root { color-scheme: light dark; }
+
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        margin: 2rem;
+        line-height: 1.5;
       }
 
+      table {
+        border-collapse: collapse;
+        max-width: 60rem;
+      }
+
+      caption {
+        text-align: left;
+        font-weight: 600;
+        padding-bottom: 0.5rem;
+      }
+
+      th,
+      td {
+        border: 1px solid currentColor;
+        padding: 0.4rem 0.75rem;
+        text-align: left;
+        vertical-align: top;
+        word-break: break-word;
+      }
+
+      th[scope="row"] {
+        white-space: nowrap;
+        font-weight: 600;
+      }
+
+      .note {
+        margin-top: 1rem;
+        max-width: 60rem;
+        font-size: 0.9rem;
+        opacity: 0.8;
+      }
     </style>
   </head>
 
   <body>
-    <h2>Infos</h2>
+    <h1>IP Address Info</h1>
 
     <table>
-      <tr>
-        <td>IP Address</td>
-        <td id="ip-address"></td>
-      </tr>
-      <tr>
-        <td>User Agent</td>
-        <td id="user-agent"></td>
-      </tr>
-      <tr>
-        <td>Language</td>
-        <td id="language"></td>
-      </tr>
-      <tr>
-        <td>Referer</td>
-        <td id="referer"></td>
-      </tr>
-      <tr>
-        <td>Method</td>
-        <td id="method"></td>
-      </tr>
-      <tr>
-        <td>Encoding</td>
-        <td id="encoding"></td>
-      </tr>
-      <tr>
-        <td>MIME Type</td>
-        <td id="mime-type"></td>
-      </tr>
-      <tr>
-        <td>Charset</td>
-        <td id="charset"></td>
-      </tr>
-      <tr>
-        <td>X-Forwarded-For</td>
-        <td id="x-forwarded-for"></td>
-      </tr>
-
-
+      <caption>Request and client information</caption>
+      <tbody id="info-body"></tbody>
     </table>
 
-    <p id="dump"></p>
-    <p id="dump2"></p>
+    <p class="note" id="server-note"></p>
+
+    <h2>Response headers</h2>
+    <table>
+      <caption>HTTP response headers for this page (read via a same-origin request)</caption>
+      <tbody id="headers-body"></tbody>
+    </table>
 
     <script>
-      document.getElementById("ip-address").innerHTML = "?";
-      document.getElementById("user-agent").innerHTML = navigator.userAgent;
-      document.getElementById("language").innerHTML = navigator.language;
-      document.getElementById("referer").innerHTML = document.referrer;
-      document.getElementById("method").innerHTML = "?";
-      document.getElementById("encoding").innerHTML = "?";
-      document.getElementById("mime-type").innerHTML = "?";
-      document.getElementById("charset").innerHTML = document.characterSet;
-      document.getElementById("x-forwarded-for").innerHTML = "?";
+      "use strict";
 
+      // Placeholder shown for values that only a backend can supply.
+      const SERVER_ONLY = "— (server-side only)";
 
-      function getHeaders() {
-        var req = new XMLHttpRequest();
-        req.open('GET', document.location, false);
-        req.send(null);
+      /*
+       * Field definitions, rendered by a single data-driven loop.
+       *  - value: a string available now, OR null when it must be filled async.
+       *  - serverOnly: true for request headers a static client page cannot read.
+       */
+      const fields = [
+        { key: "ip-address",      label: "IP Address",      value: null },
+        { key: "user-agent",      label: "User Agent",      value: navigator.userAgent },
+        { key: "language",        label: "Browser Language", value: navigator.languages?.join(", ") || navigator.language },
+        { key: "referer",         label: "Referrer (document.referrer)", value: document.referrer || "(none)" },
+        { key: "mime-type",       label: "MIME Type",       value: document.contentType },
+        { key: "charset",         label: "Charset",         value: document.characterSet },
+        { key: "method",          label: "HTTP Method",     value: SERVER_ONLY, serverOnly: true },
+        { key: "encoding",        label: "Accept-Encoding", value: SERVER_ONLY, serverOnly: true },
+        { key: "x-forwarded-for", label: "X-Forwarded-For", value: SERVER_ONLY, serverOnly: true },
+      ];
 
-        // associate array to store all values
-        var data = new Object();
+      // Cached DOM refs, keyed by field. Populated once during render.
+      const cells = new Map();
+      let anyServerOnly = false;
 
-        // get all headers in one call and parse each item
-        var headers = req.getAllResponseHeaders().toLowerCase();
-        var aHeaders = headers.split('\n');
-        var i = 0;
-        for (i = 0; i < aHeaders.length; i++) {
-          var thisItem = aHeaders[i];
-          var key = thisItem.substring(0, thisItem.indexOf(':'));
-          var value = thisItem.substring(thisItem.indexOf(':') + 1);
-          data[key] = value;
+      function render() {
+        const body = document.getElementById("info-body");
+        const frag = document.createDocumentFragment();
+
+        for (const field of fields) {
+          const row = document.createElement("tr");
+
+          const th = document.createElement("th");
+          th.scope = "row";
+          th.textContent = field.label;
+
+          const td = document.createElement("td");
+          // No DOM id needed: cells are tracked via the `cells` Map below.
+          // textContent (never innerHTML) keeps any dynamic/untrusted value as plain text.
+          td.textContent = field.value ?? "…"; // ellipsis while async values load
+
+          row.append(th, td);
+          frag.append(row);
+
+          cells.set(field.key, td);
+          if (field.serverOnly) anyServerOnly = true;
         }
 
-        // get referer
-        var referer = document.referrer;
-        data["Referer"] = referer;
+        body.append(frag);
 
-        //get useragent
-        var useragent = navigator.userAgent;
-        data["UserAgent"] = useragent;
-
-
-        //extra code to display the values in html
-        var display = "";
-        for (var key in data) {
-          if (key != "")
-            display += "<b>" + key + "</b> : " + data[key] + "<br>";
+        if (anyServerOnly) {
+          document.getElementById("server-note").textContent =
+            "Note: HTTP Method, Accept-Encoding, and X-Forwarded-For are inbound request " +
+            "headers. They cannot be read by client-side JavaScript and require a backend " +
+            "endpoint to populate. The Referrer value is read from document.referrer (the " +
+            "client-side equivalent of the inbound Referer request header).";
         }
-
-        document.getElementById("dump").innerHTML = display;
       }
 
-      getHeaders();
-
-      function text(url) {
-        return fetch(url).then(res => res.text());
+      function setCell(key, value) {
+        const cell = cells.get(key);
+        if (cell) cell.textContent = value;
       }
 
-      text('https://www.cloudflare.com/cdn-cgi/trace').then(data => {
-        let ipRegex = /[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}/
-        let ip = data.match(ipRegex)[0];
-        console.log(ip);
-      });
+      // Append a labelled <tr> (header cell + value cell) to a given <tbody>.
+      function appendRow(tbody, label, value) {
+        const row = document.createElement("tr");
 
+        const th = document.createElement("th");
+        th.scope = "row";
+        th.textContent = label;
+
+        const td = document.createElement("td");
+        td.textContent = value;
+
+        row.append(th, td);
+        tbody.append(row);
+      }
+
+      /*
+       * Parse Cloudflare /cdn-cgi/trace output (key=value lines) into a Map.
+       * Robust against ordering/extra lines; no fragile IP regex needed.
+       */
+      function parseTrace(text) {
+        const map = new Map();
+        for (const line of text.split(/\r?\n/)) {
+          const eq = line.indexOf("=");
+          if (eq > 0) map.set(line.slice(0, eq), line.slice(eq + 1));
+        }
+        return map;
+      }
+
+      // Same-origin trace: works when the site is behind Cloudflare, no CORS issues.
+      async function tryTrace() {
+        const res = await fetch("/cdn-cgi/trace", { headers: { Accept: "text/plain" } });
+        if (!res.ok) throw new Error(`trace HTTP ${res.status}`);
+
+        const trace = parseTrace(await res.text());
+        const ip = trace.get("ip");
+        if (!ip) throw new Error("no ip in trace");
+
+        setCell("ip-address", ip);
+
+        // Enrich with values the trace genuinely exposes (client-visible, no spoofing).
+        const infoBody = document.getElementById("info-body");
+        const proto = trace.get("http");
+        if (proto) appendRow(infoBody, "Protocol", proto);
+
+        const colo = trace.get("colo");
+        if (colo) appendRow(infoBody, "Cloudflare Colo", colo);
+
+        const loc = trace.get("loc");
+        if (loc) appendRow(infoBody, "Location", loc);
+
+        return true;
+      }
+
+      /*
+       * CORS-friendly fallbacks when not behind Cloudflare / trace unavailable.
+       * Two independent CORS-enabled endpoints are tried in order so a transient
+       * 5xx or outage on the first does not leave the IP cell as '(unavailable)'.
+       */
+      async function fetchIpFrom(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`${url} HTTP ${res.status}`);
+
+        const { ip } = await res.json();
+        if (!ip) throw new Error(`no ip in response from ${url}`);
+
+        return ip;
+      }
+
+      async function tryPublicFallbacks() {
+        const endpoints = [
+          "https://api.ipify.org?format=json",
+          "https://api64.ipify.org?format=json",
+        ];
+
+        let lastErr;
+        for (const url of endpoints) {
+          try {
+            setCell("ip-address", await fetchIpFrom(url));
+            return;
+          } catch (err) {
+            lastErr = err;
+            console.warn("IP fallback failed:", err);
+          }
+        }
+        throw lastErr ?? new Error("all IP fallbacks failed");
+      }
+
+      async function loadIp() {
+        try {
+          await tryTrace();
+        } catch (traceErr) {
+          // Expected on any non-Cloudflare host and on file:// origins, where the
+          // public fallbacks are the normal path. Logged at info severity to avoid
+          // alarming console noise on every load.
+          console.info("cdn-cgi/trace unavailable, using public fallback:", traceErr);
+          try {
+            await tryPublicFallbacks();
+          } catch (fallbackErr) {
+            console.error("IP lookup failed (trace and all public fallbacks):", fallbackErr);
+            setCell("ip-address", "(unavailable)");
+          }
+        }
+      }
+
+      /*
+       * Read this page's HTTP *response* headers. A page cannot read the headers
+       * of its own navigation response, so one extra same-origin GET is needed
+       * (normally served from cache). We use an ASYNC XMLHttpRequest here on
+       * purpose: getAllResponseHeaders() exposes the raw header block (including
+       * content-encoding / content-length), whereas the fetch() Headers object
+       * hides those after the browser transparently decodes the body. Only the
+       * synchronous form of XHR is harmful — async XHR never blocks the UI.
+       */
+      function loadResponseHeaders() {
+        const body = document.getElementById("headers-body");
+        const req = new XMLHttpRequest();
+        req.open("GET", location.href, true); // true = async
+
+        req.onload = () => {
+          const raw = req.getAllResponseHeaders().trim();
+          if (!raw) {
+            appendRow(body, "(unavailable)", "No readable response headers.");
+            return;
+          }
+          raw
+            .split(/\r?\n/)
+            .map((line) => {
+              const i = line.indexOf(":");
+              return i === -1 ? null : [line.slice(0, i).trim(), line.slice(i + 1).trim()];
+            })
+            .filter(Boolean)
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .forEach(([name, value]) => appendRow(body, name, value));
+        };
+
+        req.onerror = () =>
+          appendRow(body, "(unavailable)", "Response headers require an HTTP(S) origin.");
+
+        req.send();
+      }
+
+      render();
+      loadIp();
+      loadResponseHeaders();
     </script>
-
   </body>
-
 </html>
-
-
