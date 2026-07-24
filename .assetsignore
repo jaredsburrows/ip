@@ -4,6 +4,7 @@
 .github/
 .gitignore
 .assetsignore
+.idea/
 .wrangler/
 .nojekyll
 wrangler.jsonc
