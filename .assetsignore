@@ -1,0 +1,12 @@
+# Files in this repo that must never be uploaded/served as site assets.
+# Same syntax as .gitignore; consumed by `wrangler deploy`, never served.
+.git/
+.github/
+.gitignore
+.assetsignore
+.wrangler/
+.nojekyll
+wrangler.jsonc
+node_modules/
+*.md
+.DS_Store

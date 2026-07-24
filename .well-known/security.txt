@@ -1,0 +1,4 @@
+# Security contact for this site (RFC 9116)
+Contact: mailto:jaredsburrows@gmail.com
+Expires: 2027-07-01T00:00:00.000Z
+Preferred-Languages: en
