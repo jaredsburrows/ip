@@ -21,5 +21,17 @@
   <body>
     <h1>404 &mdash; Page Not Found</h1>
     <p><a href="/">Back to IP Address Info</a></p>
+
+    <script>
+      "use strict";
+
+      // GitHub Pages serves this site under /ip/, so root-absolute links here
+      // resolve to the user-root site there. The Cloudflare mirror's root is /.
+      if (location.hostname.endsWith("github.io")) {
+        document.querySelectorAll("a[href^='/'], link[rel='icon']").forEach((el) => {
+          el.setAttribute("href", "/ip" + el.getAttribute("href"));
+        });
+      }
+    </script>
   </body>
 </html>
