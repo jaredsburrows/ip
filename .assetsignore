@@ -8,6 +8,7 @@
 .wrangler/
 .nojekyll
 wrangler.jsonc
+worker.js
 node_modules/
 *.md
 .DS_Store

@@ -14,6 +14,30 @@
         "digest"
       ],
       "automerge": true
+    },
+    {
+      "description": "Majors of the deploy path have no PR CI coverage; review them by hand",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "automerge": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track the WRANGLER_VERSION pin in GitHub workflows",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "WRANGLER_VERSION: \"(?<currentValue>[^\"]+)\""
+      ],
+      "depNameTemplate": "wrangler",
+      "datasourceTemplate": "npm"
     }
   ]
 }

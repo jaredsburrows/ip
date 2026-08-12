@@ -1,12 +1,15 @@
 {
-  // Assets-only Worker: no server code, Cloudflare just serves the files in
-  // this directory from its edge. Requests to static assets are not billed
-  // as Worker invocations.
+  // Static assets are served straight from the edge and are not billed as
+  // Worker invocations. Only /api/* runs the Worker script (run_worker_first);
+  // if the free-tier daily limit is ever hit, /api/* returns 429 while the
+  // static page keeps serving.
   "name": "ip",
   "account_id": "23fd1f78e6c723b48b52bd073092907a",
+  "main": "worker.js",
   "compatibility_date": "2026-07-23",
   "assets": {
     "directory": ".",
-    "not_found_handling": "404-page"
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/api/*"]
   }
 }
