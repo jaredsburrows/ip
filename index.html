@@ -6,15 +6,18 @@
     <!-- Mirrors _headers so the policy also applies on GitHub Pages, which
          cannot set response headers. frame-ancestors lives only in _headers
          (not expressible via meta). Keep the two policies in sync. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.ipify.org https://api64.ipify.org; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://ip.jaredsburrows.workers.dev https://api.ipify.org https://api64.ipify.org; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <meta name="description" content="Shows your IP address and client/request information.">
     <meta name="author" content="Jared Burrows">
     <!-- Update this when the custom domain lands, in the same commit. -->
     <link rel="canonical" href="https://ip.jaredsburrows.workers.dev/">
     <link rel="preconnect" href="https://api.ipify.org" crossorigin>
-    <link rel="icon" href="/favicon.ico" sizes="32x32">
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <title>IP Address Info - TBD</title>
+    <link rel="preconnect" href="https://api64.ipify.org" crossorigin>
+    <!-- Relative (not root-absolute) so they resolve on the GitHub Pages
+         mirror, where the site lives under /ip/. -->
+    <link rel="icon" href="favicon.ico" sizes="32x32">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <title>IP Address Info</title>
     <style>
       :root { color-scheme: light dark; }
 
@@ -27,12 +30,7 @@
       table {
         border-collapse: collapse;
         max-width: 60rem;
-      }
-
-      caption {
-        text-align: left;
-        font-weight: 600;
-        padding-bottom: 0.5rem;
+        margin-bottom: 2rem;
       }
 
       th,
@@ -55,92 +53,67 @@
         font-size: 0.9rem;
         opacity: 0.8;
       }
+
+      button {
+        font: inherit;
+        padding: 0.4rem 0.75rem;
+        margin-bottom: 1rem;
+      }
     </style>
   </head>
 
   <body>
     <h1>IP Address Info</h1>
 
-    <table>
-      <caption>Request and client information</caption>
-      <tbody id="info-body"></tbody>
+    <h2 id="network-heading">Network</h2>
+    <table aria-labelledby="network-heading">
+      <tbody id="network-body"></tbody>
     </table>
 
-    <p class="note" id="server-note"></p>
+    <h2 id="request-heading">Request (as the server saw it)</h2>
+    <table aria-labelledby="request-heading">
+      <tbody id="request-body"></tbody>
+    </table>
 
-    <h2>Response headers</h2>
-    <table>
-      <caption>HTTP response headers for this page (read via a same-origin request)</caption>
+    <h2 id="request-headers-heading">Request headers</h2>
+    <p class="note">Every HTTP header this page's API request carried, exactly as the server received it.</p>
+    <table aria-labelledby="request-headers-heading">
+      <tbody id="request-headers-body"></tbody>
+    </table>
+
+    <h2 id="browser-heading">Browser &amp; device</h2>
+    <table aria-labelledby="browser-heading">
+      <tbody id="browser-body"></tbody>
+    </table>
+
+    <h2 id="geo-heading">Precise location (opt-in)</h2>
+    <p class="note">Uses the browser's Geolocation API after your permission. The result is
+      displayed locally on this page only and is never uploaded anywhere.</p>
+    <button id="geo-button" type="button">Share precise location</button>
+    <table aria-labelledby="geo-heading" hidden id="geo-table">
+      <tbody id="geo-body" aria-live="polite"></tbody>
+    </table>
+
+    <h2 id="response-headers-heading">Response headers</h2>
+    <p class="note">HTTP response headers for this page, read via a same-origin request.</p>
+    <table aria-labelledby="response-headers-heading">
       <tbody id="headers-body"></tbody>
     </table>
 
     <script>
       "use strict";
 
-      // Placeholder shown for values that only a backend can supply.
-      const SERVER_ONLY = "— (server-side only)";
+      const PENDING = "…"; // shown while async values load
+      const NA = "(n/a)";
+      const UNSUPPORTED = "(not supported by this browser)";
+      const UNAVAILABLE = "(unavailable)";
 
-      /*
-       * Field definitions, rendered by a single data-driven loop.
-       *  - value: a string available now, OR null when it must be filled async.
-       *  - serverOnly: true for request headers a static client page cannot read.
-       */
-      const fields = [
-        { key: "ip-address",      label: "IP Address",      value: null },
-        { key: "user-agent",      label: "User Agent",      value: navigator.userAgent },
-        { key: "language",        label: "Browser Language", value: navigator.languages?.join(", ") || navigator.language },
-        { key: "referer",         label: "Referrer (document.referrer)", value: document.referrer || "(none)" },
-        { key: "mime-type",       label: "MIME Type",       value: document.contentType },
-        { key: "charset",         label: "Charset",         value: document.characterSet },
-        { key: "method",          label: "HTTP Method",     value: SERVER_ONLY, serverOnly: true },
-        { key: "encoding",        label: "Accept-Encoding", value: SERVER_ONLY, serverOnly: true },
-        { key: "x-forwarded-for", label: "X-Forwarded-For", value: SERVER_ONLY, serverOnly: true },
-      ];
+      // The primary deployment; the GitHub Pages mirror reads it via CORS.
+      const WORKERS_ORIGIN = "https://ip.jaredsburrows.workers.dev";
 
-      // Cached DOM refs, keyed by field. Populated once during render.
-      const cells = new Map();
-      let anyServerOnly = false;
+      /* ---------- DOM helpers (textContent only — never innerHTML) ---------- */
 
-      function render() {
-        const body = document.getElementById("info-body");
-        const frag = document.createDocumentFragment();
-
-        for (const field of fields) {
-          const row = document.createElement("tr");
-
-          const th = document.createElement("th");
-          th.scope = "row";
-          th.textContent = field.label;
-
-          const td = document.createElement("td");
-          // No DOM id needed: cells are tracked via the `cells` Map below.
-          // textContent (never innerHTML) keeps any dynamic/untrusted value as plain text.
-          td.textContent = field.value ?? "…"; // ellipsis while async values load
-
-          row.append(th, td);
-          frag.append(row);
-
-          cells.set(field.key, td);
-          if (field.serverOnly) anyServerOnly = true;
-        }
-
-        body.append(frag);
-
-        if (anyServerOnly) {
-          document.getElementById("server-note").textContent =
-            "Note: HTTP Method, Accept-Encoding, and X-Forwarded-For are inbound request " +
-            "headers. They cannot be read by client-side JavaScript and require a backend " +
-            "endpoint to populate. The Referrer value is read from document.referrer (the " +
-            "client-side equivalent of the inbound Referer request header).";
-        }
-      }
-
-      function setCell(key, value) {
-        const cell = cells.get(key);
-        if (cell) cell.textContent = value;
-      }
-
-      // Append a labelled <tr> (header cell + value cell) to a given <tbody>.
+      // Append a labelled <tr> to a <tbody>; returns the value <td>.
       function appendRow(tbody, label, value) {
         const row = document.createElement("tr");
 
@@ -153,105 +126,357 @@
 
         row.append(th, td);
         tbody.append(row);
+        return td;
       }
 
-      /*
-       * Parse Cloudflare /cdn-cgi/trace output (key=value lines) into a Map.
-       * Robust against ordering/extra lines; no fragile IP regex needed.
-       */
-      function parseTrace(text) {
-        const map = new Map();
-        for (const line of text.split(/\r?\n/)) {
-          const eq = line.indexOf("=");
-          if (eq > 0) map.set(line.slice(0, eq), line.slice(eq + 1));
+      // Render [key, label, value] rows into a tbody; null value = PENDING.
+      // Returns a Map of key -> value <td> for later async fills.
+      function renderSection(tbodyId, rows) {
+        const tbody = document.getElementById(tbodyId);
+        const cells = new Map();
+        for (const [key, label, value] of rows) {
+          cells.set(key, appendRow(tbody, label, value ?? PENDING));
         }
-        return map;
+        return cells;
       }
 
-      // Same-origin trace: works when the site is behind Cloudflare, no CORS issues.
-      async function tryTrace() {
-        const res = await fetch("/cdn-cgi/trace", { headers: { Accept: "text/plain" } });
-        if (!res.ok) throw new Error(`trace HTTP ${res.status}`);
-
-        const trace = parseTrace(await res.text());
-        const ip = trace.get("ip");
-        if (!ip) throw new Error("no ip in trace");
-
-        setCell("ip-address", ip);
-
-        // Enrich with values the trace genuinely exposes (client-visible, no spoofing).
-        const infoBody = document.getElementById("info-body");
-        const proto = trace.get("http");
-        if (proto) appendRow(infoBody, "Protocol", proto);
-
-        const colo = trace.get("colo");
-        if (colo) appendRow(infoBody, "Cloudflare Colo", colo);
-
-        const loc = trace.get("loc");
-        if (loc) appendRow(infoBody, "Location", loc);
-
-        return true;
+      function setCell(cells, key, value) {
+        cells.get(key).textContent = value ?? NA;
       }
 
-      /*
-       * CORS-friendly fallbacks when not behind Cloudflare / trace unavailable.
-       * Two independent CORS-enabled endpoints are tried in order so a transient
-       * 5xx or outage on the first does not leave the IP cell as '(unavailable)'.
-       */
+      /* ---------- Client-side (synchronous) values ---------- */
+
+      function localTimezone() {
+        const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const offsetMin = -new Date().getTimezoneOffset();
+        const sign = offsetMin < 0 ? "-" : "+";
+        const abs = Math.abs(offsetMin);
+        const hh = String(Math.trunc(abs / 60)).padStart(2, "0");
+        const mm = String(abs % 60).padStart(2, "0");
+        return `${zone} (UTC${sign}${hh}:${mm})`;
+      }
+
+      function mediaPreference(name, values) {
+        for (const value of values) {
+          if (matchMedia(`(${name}: ${value})`).matches) return value;
+        }
+        return "no preference";
+      }
+
+      function primaryPointer() {
+        for (const kind of ["fine", "coarse", "none"]) {
+          if (matchMedia(`(pointer: ${kind})`).matches) return kind;
+        }
+        return "unknown";
+      }
+
+      function connectionInfo() {
+        const c = navigator.connection;
+        if (!c) return UNSUPPORTED;
+        const parts = [];
+        if (c.effectiveType) parts.push(c.effectiveType);
+        if (c.downlink !== undefined) parts.push(`~${c.downlink} Mbps`);
+        if (c.rtt !== undefined) parts.push(`~${c.rtt} ms RTT`);
+        parts.push(c.saveData ? "data saver on" : "data saver off");
+        return parts.join(", ");
+      }
+
+      function gpuInfo() {
+        try {
+          const gl = document.createElement("canvas").getContext("webgl");
+          if (!gl) return UNSUPPORTED;
+          const ext = gl.getExtension("WEBGL_debug_renderer_info");
+          // Safari masks the unmasked strings; fall back to the generic one.
+          return ext
+            ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)
+            : gl.getParameter(gl.RENDERER);
+        } catch {
+          return UNAVAILABLE;
+        }
+      }
+
+      function gpcInfo() {
+        const gpc = navigator.globalPrivacyControl;
+        if (gpc === undefined) return UNSUPPORTED;
+        return gpc ? "enabled (Sec-GPC: 1)" : "not enabled";
+      }
+
+      /* ---------- Section definitions ---------- */
+
+      const network = renderSection("network-body", [
+        ["ip", "IP Address", null],
+        ["ipv4", "IPv4 Address", null],
+        ["ipv6", "IPv6 Address", null],
+        ["xff", "X-Forwarded-For", null],
+        ["isp", "ISP / Organization", null],
+        ["country", "Country", null],
+        ["region", "Region", null],
+        ["city", "City", null],
+        ["postal", "Postal Code", null],
+        ["coords", "Coordinates (IP-based)", null],
+        ["tz", "Timezone (IP-based)", null],
+        ["continent", "Continent", null],
+        ["metro", "Metro Code", null],
+        ["colo", "Cloudflare Datacenter", null],
+        ["rtt", "Network RTT", null],
+      ]);
+      // The headline value: announce it to screen readers when it resolves.
+      network.get("ip").setAttribute("aria-live", "polite");
+
+      const request = renderSection("request-body", [
+        ["method", "HTTP Method", null],
+        ["protocol", "Protocol", null],
+        ["tls", "TLS Version", null],
+        ["cipher", "TLS Cipher", null],
+        ["encoding", "Accept-Encoding", null],
+        ["language", "Accept-Language", null],
+      ]);
+
+      const browser = renderSection("browser-body", [
+        ["ua", "User Agent", navigator.userAgent],
+        ["languages", "Browser Languages", navigator.languages?.join(", ") || navigator.language],
+        ["tz", "Local Timezone", localTimezone()],
+        ["locale", "Locale", Intl.DateTimeFormat().resolvedOptions().locale],
+        ["browser", "Browser (UA-CH)", null],
+        ["platform", "Platform (UA-CH)", null],
+        ["arch", "Architecture (UA-CH)", null],
+        ["model", "Device Model (UA-CH)", null],
+        ["formfactor", "Form Factor (UA-CH)", null],
+        ["screen", "Screen", `${screen.width}×${screen.height} (${screen.availWidth}×${screen.availHeight} available)`],
+        ["viewport", "Viewport", `${innerWidth}×${innerHeight}`],
+        ["dpr", "Device Pixel Ratio", `${devicePixelRatio}${devicePixelRatio >= 2 ? " (HiDPI)" : ""}`],
+        ["colordepth", "Color Depth", `${screen.colorDepth}-bit`],
+        ["orientation", "Orientation", screen.orientation ? `${screen.orientation.type} (${screen.orientation.angle}°)` : UNSUPPORTED],
+        ["scheme", "Color Scheme Preference", mediaPreference("prefers-color-scheme", ["dark", "light"])],
+        ["motion", "Reduced Motion", mediaPreference("prefers-reduced-motion", ["reduce"])],
+        ["cores", "CPU Cores", navigator.hardwareConcurrency ?? UNSUPPORTED],
+        ["memory", "Device Memory", navigator.deviceMemory ? `≈${navigator.deviceMemory} GB (browser caps at 8)` : UNSUPPORTED],
+        ["touch", "Touch / Pointer", `${navigator.maxTouchPoints} touch points, primary pointer: ${primaryPointer()}`],
+        ["connection", "Network Connection", connectionInfo()],
+        ["online", "Online", navigator.onLine ? "yes" : "no"],
+        ["cookies", "Cookies Enabled", navigator.cookieEnabled ? "yes" : "no"],
+        ["gpc", "Global Privacy Control", gpcInfo()],
+        ["pdf", "PDF Viewer", navigator.pdfViewerEnabled === undefined ? UNSUPPORTED : navigator.pdfViewerEnabled ? "yes" : "no"],
+        ["webdriver", "Automation (WebDriver)", navigator.webdriver ? "yes" : "no"],
+        ["gpu", "GPU", gpuInfo()],
+        ["mime", "MIME Type", document.contentType],
+        ["charset", "Charset", document.characterSet],
+        ["referrer", "Referrer (document.referrer)", document.referrer || "(none)"],
+      ]);
+
+      /* ---------- Server-side data via the Worker API ---------- */
+
+      // IP-based coordinates, kept for the precise-location distance row.
+      let ipCoords = null;
+
+      function fillFromApi(data) {
+        setCell(network, "ip", data.ip);
+        setCell(network, "xff", data.xForwardedFor);
+        setCell(network, "isp", data.asOrganization ? `${data.asOrganization} (AS${data.asn})` : null);
+        setCell(network, "country", data.country ? `${data.country}${data.isEUCountry ? " (EU)" : ""}` : null);
+        setCell(network, "region", data.region ? `${data.region}${data.regionCode ? ` (${data.regionCode})` : ""}` : null);
+        setCell(network, "city", data.city);
+        setCell(network, "postal", data.postalCode);
+        setCell(network, "coords", data.latitude ? `${data.latitude}, ${data.longitude}` : null);
+        setCell(network, "tz", data.timezone);
+        setCell(network, "continent", data.continent);
+        setCell(network, "metro", data.metroCode);
+        setCell(network, "colo", data.colo);
+        setCell(network, "rtt", data.rttMs != null ? `${data.rttMs} ms` : null);
+
+        setCell(request, "method", data.method);
+        setCell(request, "protocol", data.httpProtocol);
+        setCell(request, "tls", data.tlsVersion);
+        setCell(request, "cipher", data.tlsCipher);
+        setCell(request, "encoding", data.acceptEncoding);
+        setCell(request, "language", data.headers["accept-language"]);
+
+        const lat = parseFloat(data.latitude);
+        const lon = parseFloat(data.longitude);
+        if (Number.isFinite(lat) && Number.isFinite(lon)) ipCoords = { lat, lon };
+
+        const headersBody = document.getElementById("request-headers-body");
+        Object.keys(data.headers)
+          .sort()
+          .forEach((name) => appendRow(headersBody, name, data.headers[name]));
+      }
+
+      function markApiUnavailable() {
+        for (const [key, cell] of network) {
+          if (key !== "ipv4" && key !== "ipv6" && cell.textContent === PENDING) {
+            cell.textContent = UNAVAILABLE;
+          }
+        }
+        for (const cell of request.values()) cell.textContent = UNAVAILABLE;
+        appendRow(document.getElementById("request-headers-body"), UNAVAILABLE,
+          "The API endpoint could not be reached.");
+      }
+
+      async function loadApi() {
+        // Same-origin first (the Cloudflare deployment); the GitHub Pages
+        // mirror falls through to the Workers origin via CORS.
+        const endpoints = ["/api/info"];
+        if (location.origin !== WORKERS_ORIGIN) endpoints.push(`${WORKERS_ORIGIN}/api/info`);
+
+        for (const url of endpoints) {
+          try {
+            const res = await fetch(url, { headers: { Accept: "application/json" } });
+            if (!res.ok) throw new Error(`${url} HTTP ${res.status}`);
+            fillFromApi(await res.json());
+            return true;
+          } catch (err) {
+            console.info(`API unavailable at ${url}:`, err);
+          }
+        }
+        markApiUnavailable();
+        return false;
+      }
+
+      /* ---------- IPv4 / IPv6 via ipify (also the IP fallback) ---------- */
+
       async function fetchIpFrom(url) {
         const res = await fetch(url);
         if (!res.ok) throw new Error(`${url} HTTP ${res.status}`);
-
         const { ip } = await res.json();
         if (!ip) throw new Error(`no ip in response from ${url}`);
-
         return ip;
       }
 
-      async function tryPublicFallbacks() {
-        const endpoints = [
-          "https://api.ipify.org?format=json",
-          "https://api64.ipify.org?format=json",
-        ];
+      async function loadIpFamilies(apiLoaded) {
+        const [v4, v64] = await Promise.allSettled([
+          fetchIpFrom("https://api.ipify.org?format=json"),
+          fetchIpFrom("https://api64.ipify.org?format=json"),
+        ]);
 
-        let lastErr;
-        for (const url of endpoints) {
-          try {
-            setCell("ip-address", await fetchIpFrom(url));
-            return;
-          } catch (err) {
-            lastErr = err;
-            console.warn("IP fallback failed:", err);
-          }
+        const ipv4 = v4.status === "fulfilled" ? v4.value : null;
+        // api64 prefers IPv6 but answers with IPv4 on v4-only networks.
+        const ipv6 = v64.status === "fulfilled" && v64.value.includes(":") ? v64.value : null;
+
+        setCell(network, "ipv4", ipv4 ?? "(none detected)");
+        setCell(network, "ipv6", ipv6 ?? "(none detected)");
+
+        // Last-resort fill for the headline IP when the API was unreachable.
+        if (!apiLoaded) {
+          const fallback = ipv6 ?? ipv4;
+          if (fallback) setCell(network, "ip", fallback);
         }
-        throw lastErr ?? new Error("all IP fallbacks failed");
       }
 
-      async function loadIp() {
-        try {
-          await tryTrace();
-        } catch (traceErr) {
-          // Expected on any non-Cloudflare host and on file:// origins, where the
-          // public fallbacks are the normal path. Logged at info severity to avoid
-          // alarming console noise on every load.
-          console.info("cdn-cgi/trace unavailable, using public fallback:", traceErr);
-          try {
-            await tryPublicFallbacks();
-          } catch (fallbackErr) {
-            console.error("IP lookup failed (trace and all public fallbacks):", fallbackErr);
-            setCell("ip-address", "(unavailable)");
-          }
+      /* ---------- User-Agent Client Hints (Chromium only) ---------- */
+
+      async function loadClientHints() {
+        const uaData = navigator.userAgentData;
+        const keys = ["browser", "platform", "arch", "model", "formfactor"];
+        if (!uaData?.getHighEntropyValues) {
+          for (const key of keys) setCell(browser, key, UNSUPPORTED);
+          return;
         }
+
+        try {
+          const hints = await uaData.getHighEntropyValues([
+            "architecture", "bitness", "model", "platformVersion", "fullVersionList", "formFactors",
+          ]);
+
+          const brands = (hints.fullVersionList ?? uaData.brands ?? [])
+            .filter((b) => !b.brand.toLowerCase().includes("not"))
+            .map((b) => `${b.brand} ${b.version}`);
+
+          setCell(browser, "browser", brands.join(", ") || null);
+          setCell(browser, "platform", `${uaData.platform}${hints.platformVersion ? ` ${hints.platformVersion}` : ""}`);
+          setCell(browser, "arch", hints.architecture ? `${hints.architecture}${hints.bitness ? ` ${hints.bitness}-bit` : ""}` : null);
+          setCell(browser, "model", hints.model || "(none reported)");
+          setCell(browser, "formfactor", hints.formFactors?.join(", ") || null);
+        } catch (err) {
+          console.info("Client hints unavailable:", err);
+          for (const key of keys) setCell(browser, key, UNAVAILABLE);
+        }
+      }
+
+      /* ---------- Precise location (opt-in, displayed locally only) ---------- */
+
+      function haversineKm(a, b) {
+        const rad = (d) => (d * Math.PI) / 180;
+        const dLat = rad(b.lat - a.lat);
+        const dLon = rad(b.lon - a.lon);
+        const h = Math.sin(dLat / 2) ** 2 +
+          Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon / 2) ** 2;
+        return 2 * 6371 * Math.asin(Math.sqrt(h));
+      }
+
+      function showPosition(pos) {
+        const { latitude, longitude, accuracy, altitude, speed } = pos.coords;
+        const body = document.getElementById("geo-body");
+        body.textContent = ""; // clear any previous result
+
+        appendRow(body, "Latitude", latitude.toFixed(6));
+        appendRow(body, "Longitude", longitude.toFixed(6));
+        appendRow(body, "Accuracy", `±${Math.round(accuracy)} m`);
+        if (altitude != null) appendRow(body, "Altitude", `${Math.round(altitude)} m`);
+        if (speed != null) appendRow(body, "Speed", `${speed.toFixed(1)} m/s`);
+        if (ipCoords) {
+          const km = haversineKm(ipCoords, { lat: latitude, lon: longitude });
+          appendRow(body, "Distance from IP estimate", `~${km < 10 ? km.toFixed(1) : Math.round(km)} km`);
+        }
+
+        // A plain link the user may click — nothing is fetched automatically.
+        const mapCell = appendRow(body, "Map", "");
+        const link = document.createElement("a");
+        link.href = `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=15/${latitude}/${longitude}`;
+        link.textContent = "View on OpenStreetMap";
+        link.rel = "noopener";
+        mapCell.append(link);
+
+        document.getElementById("geo-table").hidden = false;
+      }
+
+      function showGeoError(err) {
+        const body = document.getElementById("geo-body");
+        body.textContent = "";
+        const reasons = {
+          1: "Permission denied.",
+          2: "Position unavailable.",
+          3: "Timed out.",
+        };
+        appendRow(body, "Location", reasons[err.code] ?? "Failed.");
+        document.getElementById("geo-table").hidden = false;
+      }
+
+      function initGeolocation() {
+        const button = document.getElementById("geo-button");
+
+        if (!navigator.geolocation || !window.isSecureContext) {
+          button.disabled = true;
+          button.textContent = "Geolocation unavailable (requires HTTPS)";
+          return;
+        }
+
+        button.addEventListener("click", () => {
+          button.disabled = true;
+          button.textContent = "Locating…";
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              showPosition(pos);
+              button.disabled = false;
+              button.textContent = "Refresh precise location";
+            },
+            (err) => {
+              showGeoError(err);
+              button.disabled = false;
+              button.textContent = "Try again";
+            },
+            { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+          );
+        });
       }
 
       /*
        * Read this page's HTTP *response* headers. A page cannot read the headers
        * of its own navigation response, so one extra same-origin GET is needed
-       * (normally served from cache). We use an ASYNC XMLHttpRequest here on
-       * purpose: getAllResponseHeaders() exposes the raw header block (including
-       * content-encoding / content-length), whereas the fetch() Headers object
-       * hides those after the browser transparently decodes the body. Only the
-       * synchronous form of XHR is harmful — async XHR never blocks the UI.
+       * (a cache hit under the Cache-Control rules in _headers). We use an ASYNC
+       * XMLHttpRequest on purpose: getAllResponseHeaders() exposes the raw header
+       * block (including content-encoding / content-length), whereas the fetch()
+       * Headers object hides those after the browser transparently decodes the
+       * body. Only the synchronous form of XHR is harmful — async never blocks.
        */
       function loadResponseHeaders() {
         const body = document.getElementById("headers-body");
@@ -261,7 +486,7 @@
         req.onload = () => {
           const raw = req.getAllResponseHeaders().trim();
           if (!raw) {
-            appendRow(body, "(unavailable)", "No readable response headers.");
+            appendRow(body, UNAVAILABLE, "No readable response headers.");
             return;
           }
           raw
@@ -276,13 +501,14 @@
         };
 
         req.onerror = () =>
-          appendRow(body, "(unavailable)", "Response headers require an HTTP(S) origin.");
+          appendRow(body, UNAVAILABLE, "Response headers require an HTTP(S) origin.");
 
         req.send();
       }
 
-      render();
-      loadIp();
+      loadApi().then(loadIpFamilies);
+      loadClientHints();
+      initGeolocation();
       loadResponseHeaders();
     </script>
   </body>
