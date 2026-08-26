@@ -20,7 +20,7 @@ env:
   JAVA_VERSION: 25
   # Single wrangler pin for validation and deploy; kept current by the
   # Renovate customManager in .github/renovate.json.
-  WRANGLER_VERSION: "4.125.0"
+  WRANGLER_VERSION: "4.126.0"
 
 jobs:
   checks:
