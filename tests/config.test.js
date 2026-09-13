@@ -9,9 +9,12 @@ test("both HTML mirrors keep the HTTP CSP in sync and allow IPv6 probe checks", 
   for (const file of ["index.html", "404.html"]) {
     const meta = read(file).match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)[1];
     assert.equal(meta, policy);
-    const connectSrc = meta.match(/connect-src ([^;]+)/)[1].split(/\s+/);
-    assert.ok(connectSrc.includes("https://api64.ipify.org"));
-    assert.ok(!connectSrc.includes("https://api6.ipify.org"));
+    const hosts = new Set(meta.match(/connect-src ([^;]+)/)[1]
+      .split(/\s+/)
+      .filter((value) => value.startsWith("https://"))
+      .map((value) => new URL(value).hostname));
+    assert.ok(hosts.has("api64.ipify.org"));
+    assert.ok(!hosts.has("api6.ipify.org"));
   }
 });
 
