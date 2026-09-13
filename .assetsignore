@@ -9,6 +9,12 @@
 .nojekyll
 wrangler.jsonc
 worker.js
+location.js
+tests/
+package.json
+package-lock.json
+.dev.vars*
+.env*
 node_modules/
 *.md
 .DS_Store

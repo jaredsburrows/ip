@@ -6,13 +6,13 @@
     <!-- Mirrors _headers so the policy also applies on GitHub Pages, which
          cannot set response headers. frame-ancestors lives only in _headers
          (not expressible via meta). Keep the two policies in sync. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://ip.jaredsburrows.workers.dev https://api.ipify.org https://api64.ipify.org; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://ip.jaredsburrows.workers.dev https://api.ipify.org https://api6.ipify.org; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <meta name="description" content="Shows your IP address and client/request information.">
     <meta name="author" content="Jared Burrows">
     <!-- Update this when the custom domain lands, in the same commit. -->
     <link rel="canonical" href="https://ip.jaredsburrows.workers.dev/">
     <link rel="preconnect" href="https://api.ipify.org" crossorigin>
-    <link rel="preconnect" href="https://api64.ipify.org" crossorigin>
+    <link rel="preconnect" href="https://api6.ipify.org" crossorigin>
     <!-- Relative (not root-absolute) so they resolve on the GitHub Pages
          mirror, where the site lives under /ip/. -->
     <link rel="icon" href="favicon.ico" sizes="32x32">
@@ -65,7 +65,14 @@
   <body>
     <h1>IP Address Info</h1>
 
+    <h2>Location</h2>
+    <p id="location-summary" aria-live="polite">Detecting location…</p>
+    <p id="location-source" class="note">Estimated from your public IP. VPNs, proxies, and mobile networks can affect this location.</p>
+    <p><a href="#geo-heading">Use device location</a> for a more precise estimate.</p>
+
     <h2 id="network-heading">Network</h2>
+    <p class="note">Public addresses seen by Cloudflare and direct IPv4/IPv6 checks.
+      A VPN or proxy exposes its exit address. “Not detected” can mean unavailable connectivity or a failed check.</p>
     <table aria-labelledby="network-heading">
       <tbody id="network-body"></tbody>
     </table>
@@ -86,13 +93,19 @@
       <tbody id="browser-body"></tbody>
     </table>
 
-    <h2 id="geo-heading">Precise location (opt-in)</h2>
-    <p class="note">Uses the browser's Geolocation API after your permission. The result is
-      displayed locally on this page only and is never uploaded anywhere.</p>
-    <button id="geo-button" type="button">Share precise location</button>
+    <h2 id="geo-heading">Device location (opt-in)</h2>
+    <p class="note">Uses your browser's location after permission, with its reported accuracy.
+      Coordinates stay on this page unless you enable city lookup below.</p>
+    <p id="city-lookup-option" class="note" hidden><label>
+      <input id="city-lookup" type="checkbox"> Also find my city: send coordinates through this site's Worker to Geoapify.
+    </label></p>
+    <button id="geo-button" type="button">Use device location</button>
     <table aria-labelledby="geo-heading" hidden id="geo-table">
       <tbody id="geo-body" aria-live="polite"></tbody>
     </table>
+    <p id="geo-attribution" class="note" hidden>City lookup powered by
+      <a href="https://www.geoapify.com/">Geoapify</a> and
+      <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>.</p>
 
     <h2 id="response-headers-heading">Response headers</h2>
     <p class="note">HTTP response headers for this page, read via a same-origin request.</p>
@@ -100,7 +113,9 @@
       <tbody id="headers-body"></tbody>
     </table>
 
-    <script>
+    <script type="module">
+      import { detectIP, fetchJSON, formatCountry, formatIP, formatLocation, ipFamily } from "./ip-info.js";
+
       "use strict";
 
       const PENDING = "…"; // shown while async values load
@@ -204,14 +219,14 @@
       /* ---------- Section definitions ---------- */
 
       const network = renderSection("network-body", [
-        ["ip", "IP Address", null],
+        ["ip", "Public IP (Cloudflare)", null],
         ["ipv4", "IPv4 Address", null],
         ["ipv6", "IPv6 Address", null],
         ["xff", "X-Forwarded-For", null],
         ["isp", "ISP / Organization", null],
-        ["country", "Country", null],
-        ["region", "Region", null],
-        ["city", "City", null],
+        ["country", "Country (IP-based)", null],
+        ["region", "State / Region (IP-based)", null],
+        ["city", "City (IP-based)", null],
         ["postal", "Postal Code", null],
         ["coords", "Coordinates (IP-based)", null],
         ["tz", "Timezone (IP-based)", null],
@@ -268,16 +283,45 @@
 
       // IP-based coordinates, kept for the precise-location distance row.
       let ipCoords = null;
+      let apiData = null;
+      let apiBase = null;
+      let devicePlace = null;
+      let deviceFix = null;
+      const detectedIPs = { 4: null, 6: null };
+      let ipChecksDone = false;
+
+      function renderAddresses() {
+        const primary = apiData?.ip ?? detectedIPs[6] ?? detectedIPs[4];
+        const countryFor = (ip) => ip && ip === apiData?.ip ? apiData.country : null;
+        setCell(network, "ip", formatIP(primary, countryFor(primary)) ?? (ipChecksDone ? UNAVAILABLE : PENDING));
+        // The fallback has a different source; don't label it Cloudflare.
+        network.get("ip").previousElementSibling.textContent = apiData?.ip
+          ? "Public IP (Cloudflare)" : "Public IP (ipify fallback)";
+        for (const family of [4, 6]) {
+          const ip = detectedIPs[family] ?? (ipFamily(apiData?.ip) === family ? apiData.ip : null);
+          setCell(network, `ipv${family}`, formatIP(ip, countryFor(ip)) ?? (ipChecksDone ? "(not detected)" : PENDING));
+        }
+      }
+
+      function renderLocation() {
+        document.getElementById("location-summary").textContent = formatLocation(devicePlace ?? apiData ?? {}) ?? "Location unavailable";
+        document.getElementById("location-source").textContent = devicePlace
+          ? `Device location · reported accuracy ±${Math.round(deviceFix.accuracy)} m · city resolved by Geoapify. Network location remains IP-based below.`
+          : "Estimated from your public IP by Cloudflare. VPNs, proxies, and mobile networks can affect this location.";
+      }
 
       function fillFromApi(data) {
-        setCell(network, "ip", data.ip);
+        apiData = data;
+        renderAddresses();
+        renderLocation();
+        document.getElementById("city-lookup-option").hidden = !data.locationLookupAvailable;
         setCell(network, "xff", data.xForwardedFor);
         setCell(network, "isp", data.asOrganization ? `${data.asOrganization} (AS${data.asn})` : null);
-        setCell(network, "country", data.country ? `${data.country}${data.isEUCountry ? " (EU)" : ""}` : null);
+        setCell(network, "country", formatCountry(data.country));
         setCell(network, "region", data.region ? `${data.region}${data.regionCode ? ` (${data.regionCode})` : ""}` : null);
         setCell(network, "city", data.city);
         setCell(network, "postal", data.postalCode);
-        setCell(network, "coords", data.latitude ? `${data.latitude}, ${data.longitude}` : null);
+        setCell(network, "coords", data.latitude != null && data.longitude != null ? `${data.latitude}, ${data.longitude}` : null);
         setCell(network, "tz", data.timezone);
         setCell(network, "continent", data.continent);
         setCell(network, "metro", data.metroCode);
@@ -310,6 +354,8 @@
         for (const cell of request.values()) cell.textContent = UNAVAILABLE;
         appendRow(document.getElementById("request-headers-body"), UNAVAILABLE,
           "The API endpoint could not be reached.");
+        renderAddresses();
+        renderLocation();
       }
 
       async function loadApi() {
@@ -320,9 +366,10 @@
 
         for (const url of endpoints) {
           try {
-            const res = await fetch(url, { headers: { Accept: "application/json" } });
-            if (!res.ok) throw new Error(`${url} HTTP ${res.status}`);
-            fillFromApi(await res.json());
+            const data = await fetchJSON(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+            if (!data || typeof data.headers !== "object" || !data.headers) throw new Error("Invalid API response");
+            apiBase = url.slice(0, -"/api/info".length);
+            fillFromApi(data);
             return true;
           } catch (err) {
             console.info(`API unavailable at ${url}:`, err);
@@ -334,32 +381,15 @@
 
       /* ---------- IPv4 / IPv6 via ipify (also the IP fallback) ---------- */
 
-      async function fetchIpFrom(url) {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`${url} HTTP ${res.status}`);
-        const { ip } = await res.json();
-        if (!ip) throw new Error(`no ip in response from ${url}`);
-        return ip;
-      }
-
-      async function loadIpFamilies(apiLoaded) {
-        const [v4, v64] = await Promise.allSettled([
-          fetchIpFrom("https://api.ipify.org?format=json"),
-          fetchIpFrom("https://api64.ipify.org?format=json"),
+      async function loadIpFamilies() {
+        const [v4, v6] = await Promise.allSettled([
+          detectIP(4),
+          detectIP(6),
         ]);
-
-        const ipv4 = v4.status === "fulfilled" ? v4.value : null;
-        // api64 prefers IPv6 but answers with IPv4 on v4-only networks.
-        const ipv6 = v64.status === "fulfilled" && v64.value.includes(":") ? v64.value : null;
-
-        setCell(network, "ipv4", ipv4 ?? "(none detected)");
-        setCell(network, "ipv6", ipv6 ?? "(none detected)");
-
-        // Last-resort fill for the headline IP when the API was unreachable.
-        if (!apiLoaded) {
-          const fallback = ipv6 ?? ipv4;
-          if (fallback) setCell(network, "ip", fallback);
-        }
+        detectedIPs[4] = v4.status === "fulfilled" ? v4.value : null;
+        detectedIPs[6] = v6.status === "fulfilled" ? v6.value : null;
+        ipChecksDone = true;
+        renderAddresses();
       }
 
       /* ---------- User-Agent Client Hints (Chromium only) ---------- */
@@ -392,7 +422,7 @@
         }
       }
 
-      /* ---------- Precise location (opt-in, displayed locally only) ---------- */
+      /* ---------- Device location (opt-in; city lookup separately selected) ---------- */
 
       function haversineKm(a, b) {
         const rad = (d) => (d * Math.PI) / 180;
@@ -405,6 +435,9 @@
 
       function showPosition(pos) {
         const { latitude, longitude, accuracy, altitude, speed } = pos.coords;
+        deviceFix = { latitude, longitude, accuracy };
+        devicePlace = null;
+        renderLocation();
         const body = document.getElementById("geo-body");
         body.textContent = ""; // clear any previous result
 
@@ -427,6 +460,30 @@
         mapCell.append(link);
 
         document.getElementById("geo-table").hidden = false;
+      }
+
+      async function findDeviceCity() {
+        if (!document.getElementById("city-lookup").checked ||
+            !apiData?.locationLookupAvailable || apiBase === null) return;
+        const cell = appendRow(document.getElementById("geo-body"), "Device country / region / city", "Finding city…");
+        document.getElementById("geo-attribution").hidden = false;
+        try {
+          const result = await fetchJSON(`${apiBase}/api/location`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ latitude: deviceFix.latitude, longitude: deviceFix.longitude }),
+            cache: "no-store",
+          });
+          cell.textContent = formatLocation(result) ?? "City unavailable";
+          if (result.city) {
+            devicePlace = result;
+            renderLocation();
+          } else {
+            cell.textContent += " · City unavailable; keeping the IP estimate above.";
+          }
+        } catch {
+          cell.textContent = "City lookup unavailable. Your device coordinates are shown above; the location summary keeps the IP estimate.";
+        }
       }
 
       function showGeoError(err) {
@@ -453,11 +510,19 @@
         button.addEventListener("click", () => {
           button.disabled = true;
           button.textContent = "Locating…";
+          devicePlace = null;
+          deviceFix = null;
+          document.getElementById("geo-attribution").hidden = true;
+          renderLocation();
           navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              showPosition(pos);
-              button.disabled = false;
-              button.textContent = "Refresh precise location";
+            async (pos) => {
+              try {
+                showPosition(pos);
+                await findDeviceCity();
+              } finally {
+                button.disabled = false;
+                button.textContent = "Refresh device location";
+              }
             },
             (err) => {
               showGeoError(err);
@@ -506,7 +571,8 @@
         req.send();
       }
 
-      loadApi().then(loadIpFamilies);
+      loadApi();
+      loadIpFamilies();
       loadClientHints();
       initGeolocation();
       loadResponseHeaders();

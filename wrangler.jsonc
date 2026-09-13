@@ -7,6 +7,13 @@
   "account_id": "23fd1f78e6c723b48b52bd073092907a",
   "main": "worker.js",
   "compatibility_date": "2026-07-23",
+  "ratelimits": [
+    {
+      "name": "LOCATION_LIMITER",
+      "namespace_id": "2026091301",
+      "simple": { "limit": 10, "period": 60 }
+    }
+  ],
   "assets": {
     "directory": ".",
     "not_found_handling": "404-page",
