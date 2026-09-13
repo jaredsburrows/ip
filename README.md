@@ -18,7 +18,7 @@ sees: the HTTP method, every request header, and Cloudflare's `request.cf` data
 free from the edge — only `/api/*` invokes the Worker (`run_worker_first` in
 `wrangler.jsonc`). The GitHub Pages mirror calls the same API cross-origin via
 CORS. Independent browser requests to [ipify](https://www.ipify.org/) detect
-IPv4 (`api.ipify.org`) and IPv6 (`api6.ipify.org`), and provide the headline IP
+IPv4 (`api.ipify.org`) and IPv6 (`api64.ipify.org`), and provide the headline IP
 fallback if the Worker is unavailable. Failed checks say "not detected";
 they do not prove that a device has no address of that family.
 

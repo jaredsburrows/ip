@@ -36,10 +36,10 @@ test("probes separate browser endpoints and rejects a wrong-family result", asyn
   const fetchMock = t.mock.method(globalThis, "fetch", async (url, options) => {
     calls.push(url);
     assert.equal(options.cache, "no-store");
-    return Response.json({ ip: url.includes("api6.") ? "2001:db8::1" : "203.0.113.1" });
+    return Response.json({ ip: url.includes("api64.") ? "2001:db8::1" : "203.0.113.1" });
   });
   assert.deepEqual(await Promise.all([detectIP(4), detectIP(6)]), ["203.0.113.1", "2001:db8::1"]);
-  assert.deepEqual(calls, ["https://api.ipify.org?format=json", "https://api6.ipify.org?format=json"]);
+  assert.deepEqual(calls, ["https://api.ipify.org?format=json", "https://api64.ipify.org?format=json"]);
   fetchMock.mock.mockImplementation(async () => Response.json({ ip: "203.0.113.1" }));
   await assert.rejects(detectIP(6), /Unexpected IP family/);
 });

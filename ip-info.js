@@ -62,7 +62,7 @@ export async function fetchJSON(url, options = {}, timeoutMs = 8000) {
 }
 
 export async function detectIP(family) {
-  const host = family === 4 ? "api.ipify.org" : "api6.ipify.org";
+  const host = family === 4 ? "api.ipify.org" : "api64.ipify.org";
   const data = await fetchJSON(`https://${host}?format=json`, { cache: "no-store" });
   if (ipFamily(data.ip) !== family) throw new Error("Unexpected IP family");
   return data.ip;

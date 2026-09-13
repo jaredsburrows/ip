@@ -6,13 +6,13 @@
     <!-- Mirrors _headers so the policy also applies on GitHub Pages, which
          cannot set response headers. frame-ancestors lives only in _headers
          (not expressible via meta). Keep the two policies in sync. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://ip.jaredsburrows.workers.dev https://api.ipify.org https://api6.ipify.org; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://ip.jaredsburrows.workers.dev https://api.ipify.org https://api64.ipify.org; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <meta name="description" content="Shows your IP address and client/request information.">
     <meta name="author" content="Jared Burrows">
     <!-- Update this when the custom domain lands, in the same commit. -->
     <link rel="canonical" href="https://ip.jaredsburrows.workers.dev/">
     <link rel="preconnect" href="https://api.ipify.org" crossorigin>
-    <link rel="preconnect" href="https://api6.ipify.org" crossorigin>
+    <link rel="preconnect" href="https://api64.ipify.org" crossorigin>
     <!-- Relative (not root-absolute) so they resolve on the GitHub Pages
          mirror, where the site lives under /ip/. -->
     <link rel="icon" href="favicon.ico" sizes="32x32">

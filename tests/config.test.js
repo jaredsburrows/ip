@@ -4,13 +4,14 @@ import { test } from "node:test";
 
 const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
 
-test("both HTML mirrors keep the HTTP CSP in sync and allow IPv6-only probes", () => {
+test("both HTML mirrors keep the HTTP CSP in sync and allow IPv6 probe checks", () => {
   const policy = read("_headers").match(/Content-Security-Policy: (.+)/)[1].replace("; frame-ancestors 'none'", "");
   for (const file of ["index.html", "404.html"]) {
     const meta = read(file).match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)[1];
     assert.equal(meta, policy);
-    assert.ok(meta.includes("https://api6.ipify.org"));
-    assert.ok(!meta.includes("api64.ipify.org"));
+    const connectSrc = meta.match(/connect-src ([^;]+)/)[1].split(/\s+/);
+    assert.ok(connectSrc.includes("https://api64.ipify.org"));
+    assert.ok(!connectSrc.includes("https://api6.ipify.org"));
   }
 });
 
