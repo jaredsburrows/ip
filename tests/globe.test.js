@@ -4,6 +4,7 @@ import {
   admits,
   aggregatePoints,
   cellCount,
+  GlobePresence,
   GRID_DEGREES,
   HEARTBEAT_SECONDS,
   isUuid,
@@ -139,4 +140,98 @@ test("publishes cadences that are consistent with the TTL", () => {
   assert.equal(TTL_SECONDS, TTL_MS / 1000);
   // Two missed heartbeats must still be survivable, or pins would flicker.
   assert.ok(HEARTBEAT_SECONDS * 3 <= TTL_SECONDS, "TTL must outlast a couple of missed heartbeats");
+});
+
+/* ---------- GlobePresence Durable Object (in-memory, no storage) ---------- */
+
+const call = (object, path, options) => object.fetch(new Request(`https://globe.invalid${path}`, options));
+const upsert = (object, token, cellKey) =>
+  call(object, "/presence", { method: "POST", body: JSON.stringify({ token, cellKey }) });
+const drop = (object, token) =>
+  call(object, "/presence", { method: "DELETE", body: JSON.stringify({ token }) });
+const positions = async (object) => (await call(object, "/positions")).json();
+
+test("holds presence in memory and reports it as grid points", async () => {
+  const object = new GlobePresence();
+  assert.deepEqual(await positions(object), { points: [], ttlSeconds: TTL_SECONDS });
+
+  const first = await upsert(object, "token-a", "51.5:-0.5");
+  assert.equal(first.status, 200);
+  assert.deepEqual(await first.json(), { ok: true, ttlSeconds: TTL_SECONDS, heartbeatSeconds: HEARTBEAT_SECONDS });
+
+  // A second visitor in the same cell is a count, not a second pin.
+  await upsert(object, "token-b", "51.5:-0.5");
+  await upsert(object, "token-c", "-33.5:151.5");
+  const snapshot = await positions(object);
+  assert.deepEqual(snapshot.points, [
+    { lat: -33.5, lon: 151.5, count: 1 },
+    { lat: 51.5, lon: -0.5, count: 2 },
+  ]);
+
+  // Re-heartbeating an existing token refreshes it rather than duplicating it.
+  await upsert(object, "token-a", "51.5:-0.5");
+  assert.deepEqual((await positions(object)).points.at(-1), { lat: 51.5, lon: -0.5, count: 2 });
+});
+
+test("deletes are immediate, idempotent, and reveal nothing about who was there", async () => {
+  const object = new GlobePresence();
+  await upsert(object, "token-a", "0.5:0.5");
+
+  const removed = await drop(object, "token-a");
+  assert.equal(removed.status, 200);
+  assert.deepEqual(await removed.json(), { ok: true });
+  assert.deepEqual((await positions(object)).points, []);
+
+  // Deleting an unknown token answers exactly the same way: no existence oracle.
+  const unknown = await drop(object, crypto.randomUUID());
+  assert.equal(unknown.status, 200);
+  assert.deepEqual(await unknown.json(), { ok: true });
+});
+
+test("ages pins out on the TTL without an alarm or a storage write", async (t) => {
+  const object = new GlobePresence();
+  t.mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+
+  await upsert(object, "token-a", "0.5:0.5");
+  t.mock.timers.tick(TTL_MS - 1);
+  assert.equal((await positions(object)).points.length, 1, "a pin survives right up to the TTL");
+
+  t.mock.timers.tick(1);
+  assert.deepEqual((await positions(object)).points, [], "and is swept the moment it expires");
+
+  // A heartbeat inside the window extends the pin rather than re-creating it.
+  await upsert(object, "token-b", "0.5:0.5");
+  t.mock.timers.tick(TTL_MS - 1000);
+  await upsert(object, "token-b", "0.5:0.5");
+  t.mock.timers.tick(TTL_MS - 1000);
+  assert.equal((await positions(object)).points.length, 1);
+});
+
+test("rejects writes beyond the structural caps with 429", async () => {
+  const object = new GlobePresence();
+  for (let i = 0; i < MAX_PER_CELL; i += 1) await upsert(object, `token-${i}`, "0.5:0.5");
+
+  const overflow = await upsert(object, "one-too-many", "0.5:0.5");
+  assert.equal(overflow.status, 429);
+  assert.deepEqual(await overflow.json(), { ok: false, reason: "cell" });
+
+  // The cap is per cell: the rest of the world is still writable, and the
+  // visitors already in the full cell keep their pins.
+  assert.equal((await upsert(object, "elsewhere", "10.5:10.5")).status, 200);
+  assert.equal((await upsert(object, "token-0", "0.5:0.5")).status, 200);
+  assert.equal((await positions(object)).points.find((p) => p.lat === 0.5).count, MAX_COUNT);
+});
+
+test("never leaks anything but points from its internal routes", async () => {
+  const object = new GlobePresence();
+  await upsert(object, "token-a", "51.5:-0.5");
+
+  const snapshot = await positions(object);
+  assert.deepEqual(Object.keys(snapshot).sort(), ["points", "ttlSeconds"]);
+  // No token, no expiry, no IP, no city — the point is the entire payload.
+  assert.equal(JSON.stringify(snapshot).includes("token"), false);
+
+  const unknownRoute = await call(object, "/tokens");
+  assert.equal(unknownRoute.status, 404);
+  assert.deepEqual(await unknownRoute.json(), { ok: false, reason: "unknown" });
 });

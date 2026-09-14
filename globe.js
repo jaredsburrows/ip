@@ -127,3 +127,60 @@ export function aggregatePoints(tokens) {
     })
     .sort((a, b) => a.lat - b.lat || a.lon - b.lon);
 }
+
+/*
+ * Durable Object: the single global presence map.
+ *
+ * Deliberately RAM-only. There is no `ctx.storage` call, no alarm, and no
+ * logging anywhere in this class, so presence data never reaches disk, KV, or
+ * an observability pipeline — it cannot outlive the isolate, let alone the
+ * 5-minute TTL. If the object is evicted, pins simply repopulate from the next
+ * round of heartbeats.
+ *
+ * Reached only through the Worker (Durable Objects are not routable from the
+ * internet), so these internal routes need no auth of their own.
+ */
+export class GlobePresence {
+  // The whole data model. The runtime's ctx/env constructor arguments are
+  // deliberately not captured: holding on to ctx.storage would be the first
+  // step towards persisting something.
+  #tokens = new Map();
+
+  async fetch(request) {
+    const now = Date.now();
+    // Lazy eviction: every request pays for its own share of the cleanup, so
+    // no alarm (and no storage write) is ever needed.
+    sweepExpired(this.#tokens, now);
+
+    const { pathname } = new URL(request.url);
+
+    if (pathname === "/positions") {
+      return internalJson({ points: aggregatePoints(this.#tokens), ttlSeconds: TTL_SECONDS });
+    }
+
+    if (pathname === "/presence") {
+      const { token, cellKey } = await request.json();
+
+      if (request.method === "DELETE") {
+        // Idempotent on purpose: the caller learns nothing about who was here.
+        this.#tokens.delete(token);
+        return internalJson({ ok: true });
+      }
+
+      const verdict = admits(this.#tokens, token, cellKey);
+      if (!verdict.ok) return internalJson({ ok: false, reason: verdict.reason }, 429);
+
+      this.#tokens.set(token, { cellKey, expires: now + TTL_MS });
+      return internalJson({ ok: true, ttlSeconds: TTL_SECONDS, heartbeatSeconds: HEARTBEAT_SECONDS });
+    }
+
+    return internalJson({ ok: false, reason: "unknown" }, 404);
+  }
+}
+
+function internalJson(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+}
