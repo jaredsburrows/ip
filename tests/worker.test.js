@@ -10,7 +10,7 @@ function request(path = "/api/info", { cf, ...options } = {}) {
 
 test("echoes existing request metadata, headers, and Cloudflare geo without caching", async () => {
   const response = await worker.fetch(request("/api/info", {
-    headers: { "CF-Connecting-IP": "203.0.113.7", "X-Test": "value", Origin: "https://jaredsburrows.github.io" },
+    headers: { "CF-Connecting-IP": "203.0.113.7", "X-Test": "value", Origin: "https://ip.example" },
     cf: { country: "US", region: "Florida", regionCode: "FL", city: "Orlando", latitude: "28.54", longitude: "-81.38",
       httpProtocol: "HTTP/2", tlsVersion: "TLSv1.3", tlsCipher: "TLS_AES_128_GCM_SHA256", clientAcceptEncoding: "gzip, br",
       clientTcpRtt: 12, asn: 123, asOrganization: "Example", isEUCountry: "0", colo: "MIA" },
@@ -20,7 +20,8 @@ test("echoes existing request metadata, headers, and Cloudflare geo without cach
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
   assert.equal(response.headers.get("Vary"), "Origin");
-  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "https://jaredsburrows.github.io");
+  // Single origin: no CORS headers are handed out, even to our own page.
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), null);
   assert.equal(data.ip, "203.0.113.7");
   assert.equal(data.ipVersion, 4);
   assert.equal(data.city, "Orlando");
@@ -50,7 +51,7 @@ test("preserves zero-valued metadata and recognizes Cloudflare's EU marker", asy
 
 test("works without request.cf, keeps X-Forwarded-For diagnostic only", async () => {
   const response = await worker.fetch(request("/api/info", {
-    headers: { "X-Forwarded-For": "203.0.113.99", "Accept-Encoding": "gzip", Origin: "https://untrusted.example" },
+    headers: { "X-Forwarded-For": "203.0.113.99", "Accept-Encoding": "gzip", Origin: "https://ip.example" },
   }));
   const data = await response.json();
   assert.equal(data.ip, null);
@@ -82,23 +83,30 @@ test("normalizes Pseudo IPv4 to the preserved real IPv6", async () => {
   assert.equal(data.ipVersion, 6);
 });
 
-test("routing, HEAD, method rejection and CORS preflight", async () => {
+test("routing, HEAD, method rejection and cross-origin refusal", async () => {
   assert.equal((await worker.fetch(request("/api/missing"))).status, 404);
   const head = await worker.fetch(request("/api/info", { method: "HEAD" }));
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
   const post = await worker.fetch(request("/api/info", { method: "POST" }));
   assert.equal(post.status, 405);
-  assert.equal(post.headers.get("Allow"), "GET, HEAD, OPTIONS");
+  assert.equal(post.headers.get("Allow"), "GET, HEAD");
+  // Every endpoint refuses a cross-origin browser caller and hands back no
+  // Access-Control-* header it could act on.
+  for (const path of ["/api/info", "/api/location"]) {
+    const cross = await worker.fetch(request(path, { headers: { Origin: "https://untrusted.example" } }));
+    assert.equal(cross.status, 403);
+    assert.equal(cross.headers.get("Access-Control-Allow-Origin"), null);
+    assert.equal(cross.headers.get("Vary"), "Origin");
+  }
+  // A preflight is never answered: nothing legitimate sends one any more.
   const options = await worker.fetch(request("/api/location", { method: "OPTIONS", headers: {
-    Origin: "https://jaredsburrows.github.io", "Access-Control-Request-Method": "POST",
+    Origin: "https://ip.example", "Access-Control-Request-Method": "POST",
     "Access-Control-Request-Headers": "content-type",
   } }));
-  assert.equal(options.status, 204);
-  assert.equal(await options.text(), "");
-  assert.equal(options.headers.get("Access-Control-Allow-Methods"), "POST");
-  assert.equal(options.headers.get("Access-Control-Allow-Headers"), "Content-Type");
-  assert.equal(options.headers.get("Access-Control-Allow-Origin"), "https://jaredsburrows.github.io");
+  assert.equal(options.status, 405);
+  assert.equal(options.headers.get("Allow"), "POST");
+  assert.equal(options.headers.get("Access-Control-Allow-Methods"), null);
 });
 
 const env = (success = true) => ({ GEOAPIFY_API_KEY: "test-only-secret", LOCATION_LIMITER: {
@@ -110,7 +118,7 @@ const env = (success = true) => ({ GEOAPIFY_API_KEY: "test-only-secret", LOCATIO
 const locationRequest = (body = { latitude: 28.54, longitude: -81.38 }, headers = {}) =>
   request("/api/location", { method: "POST", headers: {
     "Content-Type": "application/json", "CF-Connecting-IP": "203.0.113.7",
-    Origin: "https://jaredsburrows.github.io", ...headers,
+    Origin: "https://ip.example", ...headers,
   }, body: JSON.stringify(body) });
 
 test("city lookup returns only locality fields and keeps secrets/coordinates out of its response", async (t) => {
@@ -184,4 +192,32 @@ test("provider errors, malformed/oversized results and timeouts return a generic
     assert.equal(response.headers.get("Cache-Control"), "no-store");
     assert.equal((await response.text()).includes("test-only-secret"), false);
   }
+});
+
+test("an untrusted origin is rejected before any method handling", async (t) => {
+  const fetchMock = t.mock.method(globalThis, "fetch", () => { throw new Error("Must not fetch"); });
+  const response = await worker.fetch(request("/api/location", {
+    method: "OPTIONS",
+    headers: { Origin: "https://untrusted.example", "Access-Control-Request-Method": "POST" },
+  }));
+  assert.equal(response.status, 403);
+  assert.equal(response.headers.get("Access-Control-Allow-Methods"), null);
+  assert.equal(response.headers.get("Allow"), null);
+  assert.equal(fetchMock.mock.callCount(), 0);
+});
+
+test("HEAD is not an allowed method on the location endpoint", async () => {
+  const response = await worker.fetch(request("/api/location", { method: "HEAD" }));
+  assert.equal(response.status, 405);
+  assert.equal(response.headers.get("Allow"), "POST");
+});
+
+test("a request body without any Content-Type header is rejected, not crashed on", async (t) => {
+  const fetchMock = t.mock.method(globalThis, "fetch", () => { throw new Error("Must not fetch"); });
+  const req = locationRequest();
+  req.headers.delete("Content-Type");
+  assert.equal(req.headers.get("Content-Type"), null);
+  const response = await worker.fetch(req, env());
+  assert.equal(response.status, 415);
+  assert.equal(fetchMock.mock.callCount(), 0);
 });

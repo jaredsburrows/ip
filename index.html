@@ -3,18 +3,19 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <!-- Mirrors _headers so the policy also applies on GitHub Pages, which
-         cannot set response headers. frame-ancestors lives only in _headers
-         (not expressible via meta). Keep the two policies in sync. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://ip.jaredsburrows.workers.dev https://api.ipify.org https://api64.ipify.org; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <!-- Mirrors the _headers policy so the page is still protected when it is
+         opened without Cloudflare's response headers (local preview, saved
+         copy). frame-ancestors lives only in _headers (not expressible via
+         meta). Keep the two policies in sync. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.ipify.org https://api64.ipify.org; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <meta name="description" content="Shows your IP address and client/request information.">
     <meta name="author" content="Jared Burrows">
     <!-- Update this when the custom domain lands, in the same commit. -->
     <link rel="canonical" href="https://ip.jaredsburrows.workers.dev/">
     <link rel="preconnect" href="https://api.ipify.org" crossorigin>
     <link rel="preconnect" href="https://api64.ipify.org" crossorigin>
-    <!-- Relative (not root-absolute) so they resolve on the GitHub Pages
-         mirror, where the site lives under /ip/. -->
+    <!-- Relative (not root-absolute) so they resolve when the directory is
+         previewed from a subpath. -->
     <link rel="icon" href="favicon.ico" sizes="32x32">
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <title>IP Address Info</title>
@@ -122,9 +123,6 @@
       const NA = "(n/a)";
       const UNSUPPORTED = "(not supported by this browser)";
       const UNAVAILABLE = "(unavailable)";
-
-      // The primary deployment; the GitHub Pages mirror reads it via CORS.
-      const WORKERS_ORIGIN = "https://ip.jaredsburrows.workers.dev";
 
       /* ---------- DOM helpers (textContent only — never innerHTML) ---------- */
 
@@ -284,7 +282,6 @@
       // IP-based coordinates, kept for the precise-location distance row.
       let ipCoords = null;
       let apiData = null;
-      let apiBase = null;
       let devicePlace = null;
       let deviceFix = null;
       const detectedIPs = { 4: null, 6: null };
@@ -359,21 +356,15 @@
       }
 
       async function loadApi() {
-        // Same-origin first (the Cloudflare deployment); the GitHub Pages
-        // mirror falls through to the Workers origin via CORS.
-        const endpoints = ["/api/info"];
-        if (location.origin !== WORKERS_ORIGIN) endpoints.push(`${WORKERS_ORIGIN}/api/info`);
-
-        for (const url of endpoints) {
-          try {
-            const data = await fetchJSON(url, { headers: { Accept: "application/json" }, cache: "no-store" });
-            if (!data || typeof data.headers !== "object" || !data.headers) throw new Error("Invalid API response");
-            apiBase = url.slice(0, -"/api/info".length);
-            fillFromApi(data);
-            return true;
-          } catch (err) {
-            console.info(`API unavailable at ${url}:`, err);
-          }
+        // The page and the Worker share one origin, so this is the only
+        // endpoint; there is no other deployment to fall back to.
+        try {
+          const data = await fetchJSON("/api/info", { headers: { Accept: "application/json" }, cache: "no-store" });
+          if (!data || typeof data.headers !== "object" || !data.headers) throw new Error("Invalid API response");
+          fillFromApi(data);
+          return true;
+        } catch (err) {
+          console.info("API unavailable at /api/info:", err);
         }
         markApiUnavailable();
         return false;
@@ -464,11 +455,11 @@
 
       async function findDeviceCity() {
         if (!document.getElementById("city-lookup").checked ||
-            !apiData?.locationLookupAvailable || apiBase === null) return;
+            !apiData?.locationLookupAvailable) return;
         const cell = appendRow(document.getElementById("geo-body"), "Device country / region / city", "Finding city…");
         document.getElementById("geo-attribution").hidden = false;
         try {
-          const result = await fetchJSON(`${apiBase}/api/location`, {
+          const result = await fetchJSON("/api/location", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ latitude: deviceFix.latitude, longitude: deviceFix.longitude }),

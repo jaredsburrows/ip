@@ -32,8 +32,10 @@ const defaultInfo = {
 };
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+const ORIGIN = "https://ip.jaredsburrows.workers.dev";
+
 async function page({ info = defaultInfo, ipv4 = "203.0.113.7", ipv6 = "2001:db8::1", city,
-  origin = "https://ip.jaredsburrows.workers.dev", deferredInfo, rejectLocalInfo = false } = {}) {
+  deferredInfo } = {}) {
   const elements = new Map();
   for (const match of html.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)) {
     const element = new Element();
@@ -46,7 +48,6 @@ async function page({ info = defaultInfo, ipv4 = "203.0.113.7", ipv6 = "2001:db8
     ...helpers,
     fetchJSON: async (url, options) => {
       calls.push({ url, options });
-      if (rejectLocalInfo && url === "/api/info") throw new Error("No local Worker on GitHub Pages");
       if (url.endsWith("/api/location")) {
         if (city instanceof Error) throw city;
         return city ?? { country: "FR", region: "Île-de-France", city: "Paris" };
@@ -68,7 +69,7 @@ async function page({ info = defaultInfo, ipv4 = "203.0.113.7", ipv6 = "2001:db8
     navigator: { language: "en-US", languages: ["en-US"], onLine: true,
       geolocation: { getCurrentPosition: (success, failure) => permissions.push({ success, failure }) },
     },
-    location: { origin, href: `${origin}/`, hostname: new URL(origin).hostname },
+    location: { origin: ORIGIN, href: `${ORIGIN}/`, hostname: new URL(ORIGIN).hostname },
     window: { isSecureContext: true },
     screen: {}, innerWidth: 1000, innerHeight: 700, devicePixelRatio: 1,
     matchMedia: () => ({ matches: false }),
@@ -150,6 +151,8 @@ test("denied permission and city failures retain the fallback and leave controls
 
 test("failed API and IPv6 checks still show IPv4 without assigning an unverified country flag", async () => {
   const ui = await page({ info: new Error("offline"), ipv6: null });
+  // Single origin: a failed /api/info is not retried against another host.
+  assert.deepEqual(ui.calls.map(({ url }) => url), ["/api/info"]);
   assert.equal(ui.row("network-body", "Public IP (ipify fallback)"), "203.0.113.7");
   assert.equal(ui.row("network-body", "IPv6 Address"), "(not detected)");
   assert.equal(ui.el("location-summary").textContent, "Location unavailable");
@@ -174,14 +177,4 @@ test("missing optional bindings hide city lookup while device coordinates remain
   await ui.permissions[0].success({ coords: { latitude: 0, longitude: 0, accuracy: 10 } });
   assert.equal(ui.row("geo-body", "Latitude"), "0.000000");
   assert.equal(ui.calls.length, 1);
-});
-
-test("GitHub Pages falls back to the Cloudflare API and sends city lookup to that same origin", async () => {
-  const ui = await page({ origin: "https://jaredsburrows.github.io", rejectLocalInfo: true });
-  assert.deepEqual(ui.calls.map(({ url }) => url), ["/api/info", "https://ip.jaredsburrows.workers.dev/api/info"]);
-  ui.el("city-lookup").checked = true;
-  ui.el("geo-button").listeners.click();
-  await ui.permissions[0].success({ coords: { latitude: 48.85, longitude: 2.35, accuracy: 15 } });
-  assert.equal(ui.calls[2].url, "https://ip.jaredsburrows.workers.dev/api/location");
-  assert.ok(ui.el("location-summary").textContent.includes("Paris"));
 });

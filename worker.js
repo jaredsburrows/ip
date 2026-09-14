@@ -14,26 +14,15 @@ import { locationEnabled, lookupLocation } from "./location.js";
 const API_PATH = "/api/info";
 const LOCATION_PATH = "/api/location";
 
-// Origins allowed to read the API cross-origin (the GitHub Pages mirror).
-const ALLOWED_ORIGINS = new Set([
-  "https://jaredsburrows.github.io",
-]);
-
-function baseHeaders(request) {
-  const headers = {
+function baseHeaders() {
+  return {
     // Every response reflects per-request data; never cache it.
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
-    // Vary even when no Origin matched so shared caches key correctly.
+    // No CORS headers are ever sent: the page and the API share one origin.
+    // Responses still differ by Origin (see the 403 below), so key on it.
     "Vary": "Origin",
   };
-
-  const origin = request.headers.get("Origin");
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
-    headers["Access-Control-Allow-Origin"] = origin;
-  }
-
-  return headers;
 }
 
 // Pretty-printed JSON: negligible bytes after compression, friendly to curl.
@@ -42,7 +31,7 @@ function json(data, status, request) {
     status,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
-      ...baseHeaders(request),
+      ...baseHeaders(),
     },
   });
 }
@@ -55,27 +44,19 @@ export default {
       return json({ error: "Not found" }, 404, request);
     }
 
+    // The page is served from this same origin, so a cross-origin caller is
+    // never one of ours. Rejecting it (instead of answering a CORS preflight)
+    // keeps hostile browser origins out; scripted callers that send no Origin
+    // are bounded by the rate limiter on /api/location, not by this check.
     const origin = request.headers.get("Origin");
-    if (pathname === LOCATION_PATH && origin &&
-        origin !== new URL(request.url).origin && !ALLOWED_ORIGINS.has(origin)) {
+    if (origin && origin !== new URL(request.url).origin) {
       return json({ error: "Origin not allowed" }, 403, request);
     }
-    const methods = pathname === LOCATION_PATH ? "POST" : "GET, HEAD";
-    if (request.method === "OPTIONS") {
-      // GET needs no preflight; the mirror's JSON location POST does.
-      return new Response(null, {
-        status: 204,
-        headers: {
-          ...baseHeaders(request),
-          "Access-Control-Allow-Methods": methods,
-          "Access-Control-Allow-Headers": "Content-Type",
-        },
-      });
-    }
 
+    const methods = pathname === LOCATION_PATH ? "POST" : "GET, HEAD";
     if (!methods.split(", ").includes(request.method)) {
       const response = json({ error: "Method not allowed" }, 405, request);
-      response.headers.set("Allow", `${methods}, OPTIONS`);
+      response.headers.set("Allow", methods);
       return response;
     }
     if (pathname === LOCATION_PATH) return lookupLocation(request, env, json);
