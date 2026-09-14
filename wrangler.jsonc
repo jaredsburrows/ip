@@ -1,8 +1,9 @@
 {
   // Static assets are served straight from the edge and are not billed as
-  // Worker invocations. Only /api/* runs the Worker script (run_worker_first);
-  // if the free-tier daily limit is ever hit, /api/* returns 429 while the
-  // static page keeps serving.
+  // Worker invocations. Only the two API paths run the Worker script
+  // (run_worker_first), so scanner probes of other /api/* paths cost nothing
+  // and get the static 404 page; if the free-tier daily limit is ever hit,
+  // the API returns 429 while the static page keeps serving.
   "name": "ip",
   "account_id": "23fd1f78e6c723b48b52bd073092907a",
   "main": "worker.js",
@@ -24,6 +25,6 @@
   "assets": {
     "directory": ".",
     "not_found_handling": "404-page",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": ["/api/info", "/api/location"]
   }
 }

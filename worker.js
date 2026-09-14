@@ -4,8 +4,9 @@
  * (IP geolocation, ASN/ISP, TLS details, RTT).
  * POST /api/location — optional, rate-limited device-coordinate city lookup.
  *
- * Only /api/* reaches this Worker (see run_worker_first in wrangler.jsonc);
- * every other path is served directly from static assets, unbilled.
+ * Only these two paths reach this Worker (see run_worker_first in
+ * wrangler.jsonc); every other path, including an unknown /api/* one, is
+ * served directly from static assets, unbilled.
  */
 
 import { connectingIP, ipFamily } from "./ip-info.js";
@@ -38,8 +39,10 @@ function json(data, status, request) {
 
 export default {
   async fetch(request, env = {}) {
-    const { pathname } = new URL(request.url);
+    const url = new URL(request.url);
+    const { pathname } = url;
 
+    // Defensive: asset routing already keeps unknown paths away from here.
     if (pathname !== API_PATH && pathname !== LOCATION_PATH) {
       return json({ error: "Not found" }, 404, request);
     }
@@ -49,7 +52,7 @@ export default {
     // keeps hostile browser origins out; scripted callers that send no Origin
     // are bounded by the rate limiter on /api/location, not by this check.
     const origin = request.headers.get("Origin");
-    if (origin && origin !== new URL(request.url).origin) {
+    if (origin && origin !== url.origin) {
       return json({ error: "Origin not allowed" }, 403, request);
     }
 

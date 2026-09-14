@@ -14,6 +14,9 @@
     <link rel="canonical" href="https://ip.jaredsburrows.workers.dev/">
     <link rel="preconnect" href="https://api.ipify.org" crossorigin>
     <link rel="preconnect" href="https://api64.ipify.org" crossorigin>
+    <!-- The page module imports this one, and nothing renders until it has
+         loaded; fetch it alongside the document instead of after it. -->
+    <link rel="modulepreload" href="./ip-info.js">
     <!-- Relative (not root-absolute) so they resolve when the directory is
          previewed from a subpath. -->
     <link rel="icon" href="favicon.ico" sizes="32x32">
@@ -53,6 +56,12 @@
         max-width: 60rem;
         font-size: 0.9rem;
         opacity: 0.8;
+      }
+
+      /* Two lines at the body line-height: the resolved location can wrap on
+         narrow viewports, and it sits above every table on the page. */
+      #location-summary {
+        min-height: 3rem;
       }
 
       button {

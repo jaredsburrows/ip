@@ -55,8 +55,11 @@ jobs:
         run: java -jar node_modules/vnu-jar/build/dist/vnu.jar index.html 404.html
 
       # Credential-less config/asset validation: proves `wrangler deploy` would succeed
-      # without ever exposing the Cloudflare token to PR-triggered runs.
+      # without ever exposing the Cloudflare token to PR-triggered runs. Skipped on
+      # gh-pages, where the deploy job below runs the same validation seconds later
+      # (wrangler validates config and bundles before it uploads anything).
       - name: Validate Cloudflare config (dry run)
+        if: github.ref != 'refs/heads/gh-pages'
         run: npx --yes wrangler@${{ env.WRANGLER_VERSION }} deploy --dry-run
 
   deploy:
