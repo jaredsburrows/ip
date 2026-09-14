@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- Mirrors the index.html meta CSP; keep the policies in sync. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://ip.jaredsburrows.workers.dev https://api.ipify.org https://api64.ipify.org; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.ipify.org https://api64.ipify.org; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <meta name="robots" content="noindex">
     <link rel="icon" href="/favicon.ico" sizes="32x32">
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -23,17 +23,5 @@
   <body>
     <h1>404 &mdash; Page Not Found</h1>
     <p><a href="/">Back to IP Address Info</a></p>
-
-    <script>
-      "use strict";
-
-      // GitHub Pages serves this site under /ip/, so root-absolute links here
-      // resolve to the user-root site there. The Cloudflare mirror's root is /.
-      if (location.hostname === "jaredsburrows.github.io") {
-        document.querySelectorAll("a[href^='/'], link[rel='icon']").forEach((el) => {
-          el.setAttribute("href", "/ip" + el.getAttribute("href"));
-        });
-      }
-    </script>
   </body>
 </html>

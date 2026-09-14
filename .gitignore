@@ -2,3 +2,7 @@
 .wrangler/
 node_modules/
 .DS_Store
+.dev.vars*
+.env*
+# Working notes from automated review agents; never part of the site.
+.team/
