@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 
@@ -32,16 +33,16 @@ test("the page load path references no globe asset at all", () => {
   assert.equal(/(?:src|href)\s*=\s*["']?[^"'>\s]*globe-ui\.js/i.test(html), false);
   // Nothing under vendor/ is reachable from the page; globe-ui.js loads it.
   assert.equal(/["'(]\s*\.?\/?vendor\//i.test(html), false, "index.html must not reference vendor/");
-  assert.match(ui, /vendor\/globe\.gl\.min\.js/);
+  assert.match(ui, /vendor\/globe\.gl-2\.46\.2\.min\.js/);
 });
 
 test("the lazy-load guard catches an uppercase tag, as a browser would", () => {
   // Every one of these fetches a globe asset on page load, so every one of
   // them has to be caught; a case-sensitive scan sees none of them.
   for (const markup of [
-    '<SCRIPT SRC="vendor/globe.gl.min.js"></SCRIPT>',
+    '<SCRIPT SRC="vendor/globe.gl-2.46.2.min.js"></SCRIPT>',
     "<Link rel=modulepreload href=globe-ui.js>",
-    '<IMG src="/Vendor/earth-blue-marble-2048.jpg" hidden>',
+    '<IMG src="/Vendor/earth-blue-marble-2048-c8fd8b5a.jpg" hidden>',
   ]) {
     assert.equal(eagerGlobeTags(markup).length, 1, markup);
   }
@@ -131,18 +132,50 @@ test("the globe client talks only to its own origin", () => {
 
 test("the globe assets are served, and cached for the right length of time", () => {
   const headers = read("_headers");
-  assert.match(headers, /\/vendor\/\*\n {2}Cache-Control: public, max-age=31536000, immutable/);
   // Must expire with the page that imports it (the BUG-1 failure mode).
   const page = headers.match(/^\/\n {2}Cache-Control: (.+)$/m)[1];
   assert.match(headers, new RegExp(`/globe-ui\\.js\\n {2}Cache-Control: ${page}`));
 
   const excluded = new Set(read(".assetsignore").split("\n"));
-  for (const path of ["globe-ui.js", "vendor/", "vendor/globe.gl.min.js"]) {
+  for (const path of ["globe-ui.js", "vendor/", "vendor/globe.gl-2.46.2.min.js"]) {
     assert.equal(excluded.has(path), false, `${path} must still be served`);
   }
   // The worker-only module and the provenance note are not assets.
   assert.ok(excluded.has("globe.js"));
   assert.ok(excluded.has("*.md"));
+});
+
+test("a year of immutable is promised only for URLs that carry their own bytes", () => {
+  // `_headers` as [{ path, headers }]: a path at column 0, its headers indented.
+  const rules = [];
+  for (const line of read("_headers").split("\n")) {
+    if (!line.trim() || line.startsWith("#")) continue;
+    if (line.startsWith("  ")) rules.at(-1).headers.push(line.trim());
+    else rules.push({ path: line, headers: [] });
+  }
+
+  const immutable = rules.filter(({ headers }) => headers.some((value) => /^Cache-Control:.*\bimmutable\b/.test(value)));
+  const vendored = readdirSync(new URL("../vendor", import.meta.url)).filter((name) => !name.endsWith(".md"));
+  // One rule per real file, never a pattern: a pattern would make the same
+  // year-long promise for a file nobody has content-addressed yet.
+  assert.deepEqual(immutable.map(({ path }) => path).sort(), vendored.map((name) => `/vendor/${name}`).sort());
+  // ...and globe-ui.js asks for exactly those URLs, so a rename cannot leave a
+  // stale reference behind.
+  assert.deepEqual([...ui.matchAll(/new URL\("(vendor\/[^"]+)"/g)].map(([, path]) => `/${path}`).sort(),
+    immutable.map(({ path }) => path).sort());
+
+  const provenance = read("vendor/PROVENANCE.md");
+  for (const { path, headers } of immutable) {
+    assert.deepEqual(headers, ["Cache-Control: public, max-age=31536000, immutable"]);
+    const name = path.slice("/vendor/".length);
+    const sha256 = createHash("sha256").update(readFileSync(new URL(`../vendor/${name}`, import.meta.url))).digest("hex");
+    // Upstream version or a prefix of the file's own hash. Either way new
+    // bytes mean a new URL, so a cached copy can never mask a patched file.
+    assert.ok(/-\d+\.\d+\.\d+\./.test(name) || name.includes(sha256.slice(0, 8)), `${name} is not content-addressed`);
+    // PROVENANCE.md documents this exact filename, and its hash is this file.
+    assert.match(provenance, new RegExp(`^## vendor/${name.replace(/\./g, "\\.")}$`, "m"));
+    assert.ok(provenance.includes(sha256), `${name}: the SHA-256 in PROVENANCE.md is not this file`);
+  }
 });
 
 test("the share opt-in is unticked, unstored, and reversible", () => {

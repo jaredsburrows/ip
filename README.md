@@ -53,9 +53,11 @@ trusted by default.
 "View live globe" opens a 3D globe of everyone currently sharing an approximate
 area. Nothing globe-related is downloaded until that button is pressed: the
 page's only addition is the handler that dynamically imports `globe-ui.js`,
-which then loads the vendored `vendor/globe.gl.min.js` and Earth texture (see
-`vendor/PROVENANCE.md` for versions, hashes, and licenses). Vendoring keeps the
-CSP unchanged and keeps a third-party CDN out of the serving path.
+which then loads the vendored `vendor/globe.gl-2.46.2.min.js` and Earth
+texture (see `vendor/PROVENANCE.md` for versions, hashes, and licenses).
+Vendoring keeps the CSP unchanged and keeps a third-party CDN out of the
+serving path. Those filenames carry a version or a content hash, so `_headers`
+can cache them `immutable` without ever stranding a browser on a stale copy.
 
 Opening the globe makes you a viewer only. An unticked "Share my approximate
 area on the globe" checkbox is the only thing that publishes a pin, and:

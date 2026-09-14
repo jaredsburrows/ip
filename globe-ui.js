@@ -11,8 +11,10 @@
  */
 
 // Resolved against this module, so the paths hold wherever the site is served.
-const LIBRARY_URL = new URL("vendor/globe.gl.min.js", import.meta.url);
-const TEXTURE_URL = new URL("vendor/earth-blue-marble-2048.jpg", import.meta.url);
+// Both names are content-addressed (upstream version, then a SHA-256 prefix),
+// which is what earns them a year of immutable caching in _headers.
+const LIBRARY_URL = new URL("vendor/globe.gl-2.46.2.min.js", import.meta.url);
+const TEXTURE_URL = new URL("vendor/earth-blue-marble-2048-c8fd8b5a.jpg", import.meta.url);
 
 // Same-origin only: there is no cross-origin fallback and no CORS.
 const POSITIONS_PATH = "/api/globe/positions";

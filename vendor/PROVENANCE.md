@@ -8,21 +8,27 @@ dependencies: nothing installs, builds, or bundles them.
 
 They are loaded only after the visitor clicks "View live globe".
 
+Every filename carries the upstream version or a prefix of the file's own
+SHA-256, so the URL changes whenever the bytes do. `_headers` relies on that
+to serve them `immutable` for a year: a new file can never be shadowed by a
+cached copy of an old one, so an upstream security fix is one commit away
+rather than a year away.
+
 `*.md` is excluded by `.assetsignore`, so this file is not served.
 
-## vendor/globe.gl.min.js
+## vendor/globe.gl-2.46.2.min.js
 
 - Package: `globe.gl@2.46.2` (npm), file `dist/globe.gl.min.js`
 - Upstream: <https://github.com/vasturiano/globe.gl>
 - Tarball: <https://registry.npmjs.org/globe.gl/-/globe.gl-2.46.2.tgz>
   - SHA-256 (tarball): `914349def3da1323fc732229c715b5be92a6fbd55346e193dc05483f72359c87`
-- Vendored byte-for-byte from the tarball.
+- Vendored byte-for-byte from the tarball, renamed to carry the version.
   - Size: 1,885,160 bytes
   - SHA-256: `2c3e445c04d121215910a89688b96091c8a72071c122a4f830081a39b636c94c`
 - License: MIT (Copyright (c) 2019 Vasco Asturiano). Bundles three.js and
   three-globe, also MIT.
 - Self-contained UMD build; it exposes `window.Globe` and is loaded as a
-  classic `<script src="vendor/globe.gl.min.js">`. The much smaller
+  classic `<script src="vendor/globe.gl-2.46.2.min.js">`. The much smaller
   `dist/globe.gl.mjs` is not usable here: it has bare `three` /`three-globe`
   imports that would need an import map plus the whole dependency tree.
 
@@ -34,7 +40,7 @@ tar xzf globe.gl-2.46.2.tgz package/dist/globe.gl.min.js
 shasum -a 256 package/dist/globe.gl.min.js
 ```
 
-## vendor/earth-blue-marble-2048.jpg
+## vendor/earth-blue-marble-2048-c8fd8b5a.jpg
 
 - Imagery: NASA Visible Earth "Blue Marble" — public domain under NASA's media
   usage guidelines (<https://visibleearth.nasa.gov/>).
@@ -49,6 +55,9 @@ shasum -a 256 package/dist/globe.gl.min.js
   the ~2.4 MB that was approved for vendoring.
   - Size: 522,454 bytes, 2048x1024
   - SHA-256: `c8fd8b5a73be3dbb1c871f9a302fdfd52054ece31119d29d337f3541ac760933`
+- There is no upstream version to name it after — it is a re-encode — so the
+  filename carries the first 8 hex of that SHA-256 instead. Re-encoding gives
+  a different hash, and so a different URL.
 
 Reproduce:
 
@@ -57,10 +66,16 @@ npm pack three-globe@2.45.2
 tar xzf three-globe-2.45.2.tgz package/example/img/earth-blue-marble.jpg
 sips -Z 2048 --setProperty format jpeg --setProperty formatOptions 80 \
   package/example/img/earth-blue-marble.jpg --out earth-blue-marble-2048.jpg
+shasum -a 256 earth-blue-marble-2048.jpg  # the first 8 hex name the file
+mv earth-blue-marble-2048.jpg earth-blue-marble-2048-c8fd8b5a.jpg
 ```
 
 ## Updating
 
-Replace the file, update the version, size, and SHA-256 above in the same
-commit, and re-check that no new CSP host is required. Neither file needs to
-be current for the feature to work, so bumps are opt-in.
+Never overwrite a file in place: the URLs are cached `immutable` for a year,
+so a new body at an old name would reach nobody. Instead add the new file
+under its new name (upstream version, or the first 8 hex of its SHA-256),
+delete the old one, and in the same commit update the reference in
+`globe-ui.js`, the rule in `_headers`, and the version, size, and SHA-256
+above. Re-check that no new CSP host is required. Neither file needs to be
+current for the feature to work, so bumps are opt-in.
