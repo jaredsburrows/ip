@@ -1,4 +1,27 @@
-import { connectingIP } from "./ip-info.js";
+import { connectingIP, ipFamily } from "./ip-info.js";
+
+/*
+ * Rate-limit bucket for a connecting IP.
+ *
+ * A single visitor is routinely routed a whole IPv6 /64, so counting the full
+ * address lets them source every request from a fresh one and reset the
+ * counter for free. Count the /64 prefix instead. IPv4 has no equivalent
+ * free-rotation range, so it is counted whole.
+ */
+export function limiterKey(ip) {
+  if (ipFamily(ip) !== 6) return ip;
+  const groups = (part) => (part ? part.split(":") : []);
+  // An embedded IPv4 tail ("::ffff:192.0.2.1") occupies two groups, not one.
+  const width = (list) => list.reduce((total, group) => total + (group.includes(".") ? 2 : 1), 0);
+  const [head, tail] = ip.split("::");
+  const parts = groups(head);
+  const rest = groups(tail);
+  // "::" stands for however many all-zero groups are missing.
+  if (tail !== undefined) parts.push(...Array(Math.max(0, 8 - width(parts) - width(rest))).fill("0"));
+  parts.push(...rest);
+  // Normalize (leading zeros, case) so one prefix always yields one key.
+  return `${parts.slice(0, 4).map((group) => (parseInt(group, 16) || 0).toString(16)).join(":")}::/64`;
+}
 
 // Bound both request and upstream response bodies, including chunked bodies.
 async function limitedJSON(message, maxBytes) {
@@ -30,7 +53,7 @@ async function limitedJSON(message, maxBytes) {
 }
 
 export function locationEnabled(env) {
-  return Boolean(env.GEOAPIFY_API_KEY && env.LOCATION_LIMITER);
+  return Boolean(env.GEOAPIFY_API_KEY && env.LOCATION_LIMITER && env.LOCATION_LIMITER_COARSE);
 }
 
 export async function lookupLocation(request, env, json) {
@@ -57,8 +80,14 @@ export async function lookupLocation(request, env, json) {
   try {
     // Anonymous endpoint: shared public IPs share this allowance. Counters
     // are local to a Cloudflare location, not a global provider budget cap.
-    const { success } = await env.LOCATION_LIMITER.limit({ key: `ip:location:${ip}` });
+    const { success } = await env.LOCATION_LIMITER.limit({ key: `ip:location:${limiterKey(ip)}` });
     if (!success) return json({ error: "Too many lookups; try again in a minute" }, 429, request);
+    // Crude ceiling on top of the per-client bucket: it bounds what a spread
+    // of clients (or of /64s) can spend at one Cloudflare location. Checked
+    // second so a client already over its own budget never consumes it. The
+    // only true global cap is a spend limit on the provider account.
+    const ceiling = await env.LOCATION_LIMITER_COARSE.limit({ key: "location:all" });
+    if (!ceiling.success) return json({ error: "Too many lookups; try again in a minute" }, 429, request);
     const url = new URL("https://api.geoapify.com/v1/geocode/reverse");
     url.search = new URLSearchParams({
       lat: String(latitude), lon: String(longitude), type: "city",

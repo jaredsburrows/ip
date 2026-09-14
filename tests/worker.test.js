@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import worker from "../worker.js";
+import { limiterKey } from "../location.js";
 
 function request(path = "/api/info", { cf, ...options } = {}) {
   const req = new Request(`https://ip.example${path}`, options);
@@ -109,12 +110,15 @@ test("routing, HEAD, method rejection and cross-origin refusal", async () => {
   assert.equal(options.headers.get("Access-Control-Allow-Methods"), null);
 });
 
-const env = (success = true) => ({ GEOAPIFY_API_KEY: "test-only-secret", LOCATION_LIMITER: {
-  async limit({ key }) {
-    assert.equal(key, "ip:location:203.0.113.7");
-    return { success };
-  },
-} });
+function env(success = true, ceiling = true) {
+  const keys = [];
+  return {
+    keys, // test-only: records every bucket the request consumed, in order
+    GEOAPIFY_API_KEY: "test-only-secret",
+    LOCATION_LIMITER: { async limit({ key }) { keys.push(key); return { success }; } },
+    LOCATION_LIMITER_COARSE: { async limit({ key }) { keys.push(key); return { success: ceiling }; } },
+  };
+}
 const locationRequest = (body = { latitude: 28.54, longitude: -81.38 }, headers = {}) =>
   request("/api/location", { method: "POST", headers: {
     "Content-Type": "application/json", "CF-Connecting-IP": "203.0.113.7",
@@ -131,16 +135,21 @@ test("city lookup returns only locality fields and keeps secrets/coordinates out
     assert.ok(options.signal);
     return Response.json({ results: [{ country_code: "us", state: "Florida", city: "Orlando", lat: 28.54, street: "Private street" }] });
   });
-  const response = await worker.fetch(locationRequest(), env());
+  const bindings = env();
+  const response = await worker.fetch(locationRequest(), bindings);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.deepEqual(await response.json(), { country: "US", region: "Florida", city: "Orlando", source: "device" });
+  assert.deepEqual(bindings.keys, ["ip:location:203.0.113.7", "location:all"]);
   assert.equal(fetchMock.mock.callCount(), 1);
 });
 
-test("lookup is unavailable without both a secret and rate limiter", async (t) => {
+test("lookup is unavailable without the secret and both rate limiters", async (t) => {
   const fetchMock = t.mock.method(globalThis, "fetch", () => { throw new Error("Must not fetch"); });
-  for (const bindings of [{}, { GEOAPIFY_API_KEY: "test" }, { LOCATION_LIMITER: env().LOCATION_LIMITER }]) {
+  const full = env();
+  for (const bindings of [{}, { GEOAPIFY_API_KEY: "test" }, { LOCATION_LIMITER: full.LOCATION_LIMITER },
+    { GEOAPIFY_API_KEY: "test", LOCATION_LIMITER: full.LOCATION_LIMITER },
+    { GEOAPIFY_API_KEY: "test", LOCATION_LIMITER_COARSE: full.LOCATION_LIMITER_COARSE }]) {
     assert.equal((await worker.fetch(locationRequest(), bindings)).status, 503);
     const data = await (await worker.fetch(request(), bindings)).json();
     assert.equal(data.locationLookupAvailable, false);
@@ -163,11 +172,35 @@ test("rejects bad coordinates, oversized bodies, wrong content type, origins and
 
 test("rate limiting fails closed and avoids provider calls", async (t) => {
   const fetchMock = t.mock.method(globalThis, "fetch", () => { throw new Error("Must not fetch"); });
-  assert.equal((await worker.fetch(locationRequest(), env(false))).status, 429);
+  const overBudget = env(false);
+  assert.equal((await worker.fetch(locationRequest(), overBudget)).status, 429);
+  // A client already over its own budget must not spend the shared ceiling.
+  assert.deepEqual(overBudget.keys, ["ip:location:203.0.113.7"]);
+  assert.equal((await worker.fetch(locationRequest(), env(true, false))).status, 429);
   const broken = env();
   broken.LOCATION_LIMITER.limit = async () => { throw new Error("unavailable"); };
   assert.equal((await worker.fetch(locationRequest(), broken)).status, 502);
   assert.equal(fetchMock.mock.callCount(), 0);
+});
+
+test("an IPv6 /64 counts as one client, so rotating inside it cannot reset the budget", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({ results: [{ country_code: "us", city: "Orlando" }] }));
+  const bindings = env();
+  for (const ip of ["2001:db8:1:2:3:4:5:6", "2001:0DB8:0001:0002:ffff::1"]) {
+    assert.equal((await worker.fetch(locationRequest(undefined, { "CF-Connecting-IP": ip }), bindings)).status, 200);
+  }
+  assert.deepEqual(bindings.keys.filter((key) => key.startsWith("ip:")),
+    ["ip:location:2001:db8:1:2::/64", "ip:location:2001:db8:1:2::/64"]);
+});
+
+test("limiter buckets collapse an IPv6 /64 and leave IPv4 addresses whole", () => {
+  assert.equal(limiterKey("203.0.113.7"), "203.0.113.7");
+  assert.equal(limiterKey("2001:db8::1"), "2001:db8:0:0::/64");
+  assert.equal(limiterKey("2001:0db8:0000:0001:aaaa:bbbb:cccc:dddd"), "2001:db8:0:1::/64");
+  assert.equal(limiterKey("2001:db8:1:2::"), "2001:db8:1:2::/64");
+  assert.equal(limiterKey("::1"), "0:0:0:0::/64");
+  assert.equal(limiterKey("::ffff:192.0.2.1"), "0:0:0:0::/64");
 });
 
 test("accepts zero coordinates and town/village names without inventing a nearby city", async (t) => {

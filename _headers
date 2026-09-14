@@ -12,3 +12,7 @@
   Cache-Control: public, max-age=300, must-revalidate
 /404.html
   Cache-Control: public, max-age=300, must-revalidate
+# The page imports this module; expire the pair together so a cached page can
+# never be paired with a stale module.
+/ip-info.js
+  Cache-Control: public, max-age=300, must-revalidate

@@ -58,10 +58,13 @@ npx wrangler secret put GEOAPIFY_API_KEY
 
 For local preview, put the key in an ignored `.dev.vars` file. Without the
 secret, city lookup is hidden and its endpoint returns 503; Cloudflare location
-and opt-in device coordinates still work. The `LOCATION_LIMITER` binding in
-`wrangler.jsonc` allows 10 lookups per public IP per minute at each Cloudflare
-location; users sharing an IP share the allowance. This is an abuse guard,
-not a global Geoapify quota cap. Configure provider quota controls separately.
+and opt-in device coordinates still work. Two `wrangler.jsonc` rate-limit
+bindings guard the endpoint at each Cloudflare location: `LOCATION_LIMITER`
+allows 10 lookups per minute per client — counted per IPv4 address, or per
+IPv6 /64 so that rotating inside one prefix does not reset the counter — and
+`LOCATION_LIMITER_COARSE` caps everyone together at 60 per minute. Users
+sharing an address or prefix share the allowance. Both are abuse guards, not a
+global Geoapify quota cap; configure provider spend controls separately.
 
 The endpoint validates coordinate ranges, limits request/response sizes,
 times out provider calls, and returns `Cache-Control: no-store`. Application
