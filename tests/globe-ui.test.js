@@ -10,19 +10,43 @@ const ui = read("globe-ui.js");
 // that an API is genuinely unused.
 const uiCode = ui.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
 
+// Tag and attribute names in HTML are case-insensitive: a browser fetches
+// `<SCRIPT SRC=...>` exactly as it fetches `<script src=...>`. Every pattern
+// that reads markup below carries /i for that reason, so no stray capital can
+// smuggle an eager load past the guard.
+const FETCHING_TAG = /<(link|script|img|iframe)\b[^>]*>/gi;
+const GLOBE_ASSET = /globe-ui\.js|globe\.gl|vendor\//i;
+
+/** Every tag in `markup` that would make the browser fetch a globe asset. */
+const eagerGlobeTags = (markup) =>
+  [...markup.matchAll(FETCHING_TAG)].map((match) => match[0]).filter((tag) => GLOBE_ASSET.test(tag));
+
 // The hard acceptance criterion: with the globe unopened, the page must issue
 // zero extra requests. These assertions are what keeps that true over time.
 test("the page load path references no globe asset at all", () => {
   // No preload, prefetch, modulepreload, preconnect or stylesheet for them.
-  for (const [, tag] of html.matchAll(/<(link|script|img|iframe)\b[^>]*>/g).map((m) => [m, m[0]])) {
-    assert.equal(/globe-ui\.js|globe\.gl|vendor\//.test(tag), false, tag);
-  }
+  assert.deepEqual(eagerGlobeTags(html), []);
   // The module is reached exactly once, and only through a dynamic import.
   assert.deepEqual(html.match(/import\("\.\/globe-ui\.js"\)/g), ['import("./globe-ui.js")']);
-  assert.equal(/(?:src|href)\s*=\s*["'][^"']*globe-ui\.js/.test(html), false);
+  // Unquoted attribute values are legal HTML, so the quotes are optional here.
+  assert.equal(/(?:src|href)\s*=\s*["']?[^"'>\s]*globe-ui\.js/i.test(html), false);
   // Nothing under vendor/ is reachable from the page; globe-ui.js loads it.
-  assert.equal(/["'(]\s*\.?\/?vendor\//.test(html), false, "index.html must not reference vendor/");
+  assert.equal(/["'(]\s*\.?\/?vendor\//i.test(html), false, "index.html must not reference vendor/");
   assert.match(ui, /vendor\/globe\.gl\.min\.js/);
+});
+
+test("the lazy-load guard catches an uppercase tag, as a browser would", () => {
+  // Every one of these fetches a globe asset on page load, so every one of
+  // them has to be caught; a case-sensitive scan sees none of them.
+  for (const markup of [
+    '<SCRIPT SRC="vendor/globe.gl.min.js"></SCRIPT>',
+    "<Link rel=modulepreload href=globe-ui.js>",
+    '<IMG src="/Vendor/earth-blue-marble-2048.jpg" hidden>',
+  ]) {
+    assert.equal(eagerGlobeTags(markup).length, 1, markup);
+  }
+  // ...without flagging what the page does legitimately load on first paint.
+  assert.deepEqual(eagerGlobeTags('<SCRIPT type="module" src="ip-info.js"></SCRIPT><LINK rel=icon href=favicon.svg>'), []);
 });
 
 test("index.html stays inside the page-weight budget", () => {
@@ -99,7 +123,7 @@ test("importing globe-ui.js does no work of its own", async () => {
 
 test("the globe client talks only to its own origin", () => {
   // No absolute URLs: no CDN, no mirror fallback, nothing for CSP to allow.
-  assert.deepEqual(uiCode.match(/https?:\/\/[^"'\s)]+/g), null);
+  assert.deepEqual(uiCode.match(/https?:\/\/[^"'\s)]+/gi), null);
   assert.deepEqual(new Set(ui.match(/fetch\(([^,)]+)/g)), new Set(["fetch(POSITIONS_PATH", "fetch(PRESENCE_PATH"]));
   assert.match(ui, /const POSITIONS_PATH = "\/api\/globe\/positions"/);
   assert.match(ui, /const PRESENCE_PATH = "\/api\/globe\/presence"/);
