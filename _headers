@@ -16,3 +16,10 @@
 # never be paired with a stale module.
 /ip-info.js
   Cache-Control: public, max-age=300, must-revalidate
+# Same reasoning: the globe module expires with the page that imports it.
+/globe-ui.js
+  Cache-Control: public, max-age=300, must-revalidate
+# Pinned, content-addressed by version in vendor/PROVENANCE.md: a change here
+# is always a new file, never a new body at the same URL.
+/vendor/*
+  Cache-Control: public, max-age=31536000, immutable
