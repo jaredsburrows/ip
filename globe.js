@@ -184,3 +184,180 @@ function internalJson(data, status = 200) {
     headers: { "Content-Type": "application/json; charset=utf-8" },
   });
 }
+
+/* ---------- Worker routes (same-origin only, no CORS) ---------- */
+
+export const POSITIONS_PATH = "/api/globe/positions";
+export const PRESENCE_PATH = "/api/globe/presence";
+
+// Nothing but a token is ever accepted, so the body is tiny by definition.
+const MAX_BODY_BYTES = 1024;
+
+function globeHeaders() {
+  return {
+    "Content-Type": "application/json; charset=utf-8",
+    // Presence is per-request and ephemeral; never let anything cache it.
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    // No CORS headers are ever sent: the page and the API share one origin.
+    // Responses still differ by Origin (see the 403 below), so key on it.
+    "Vary": "Origin",
+  };
+}
+
+function reply(data, status, request, extra) {
+  const headers = { ...globeHeaders(), ...extra };
+  return new Response(request.method === "HEAD" ? null : JSON.stringify(data), { status, headers });
+}
+
+function methodNotAllowed(request, allow) {
+  return reply({ error: "Method not allowed" }, 405, request, { Allow: allow });
+}
+
+/**
+ * Read a small JSON body without trusting Content-Length: the stream is
+ * abandoned as soon as it exceeds the cap, so an oversized upload cannot be
+ * used to burn Worker time.
+ */
+async function limitedJSON(request, limit) {
+  if (request.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== "application/json") {
+    return { error: "type" };
+  }
+  if (!request.body) return { error: "body" };
+
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) {
+        await reader.cancel();
+        return { error: "body" };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return { value: JSON.parse(new TextDecoder().decode(bytes)) };
+  } catch {
+    return { error: "body" };
+  }
+}
+
+/**
+ * Rate-limit key. Residential and VPS IPv6 comes as a routed /64, so keying on
+ * the full address would let one subscriber rotate through 2^64 buckets
+ * (SEC-1). Collapsing to the /64 removes the cheapest bypass; it is still only
+ * a courtesy control, and the caps in the Durable Object are the real bound.
+ */
+export function limiterKey(ip) {
+  if (typeof ip !== "string" || ip === "") return null;
+  if (!ip.includes(":")) return `globe:${ip}`;
+  const hextets = ip.split(":");
+  // An abbreviated address ("2001:db8::1") has fewer than four leading
+  // hextets only when the elision starts inside the /64, so the prefix is
+  // whatever precedes it — expanding it would add no entropy.
+  return `globe:${hextets.slice(0, 4).join(":")}::/64`;
+}
+
+// Advisory only, and deliberately fail-open: a limiter outage must not take
+// the feature down, because the structural caps (and server-derived
+// coordinates) are what actually bound abuse here.
+async function withinRateLimit(request, env) {
+  const key = limiterKey(request.headers.get("CF-Connecting-IP"));
+  if (!env.GLOBE_LIMITER || !key) return true;
+  try {
+    const { success } = await env.GLOBE_LIMITER.limit({ key });
+    return success;
+  } catch {
+    return true;
+  }
+}
+
+async function readToken(request) {
+  const body = await limitedJSON(request, MAX_BODY_BYTES);
+  if (body.error === "type") return { status: 415, error: "Expected application/json" };
+  if (body.error) return { status: 400, error: "Invalid or oversized JSON body" };
+  // Only the token is read. There is no code path by which a client-supplied
+  // coordinate could ever reach the presence map.
+  const token = body.value?.token;
+  if (!isUuid(token)) return { status: 400, error: "Invalid token" };
+  return { token };
+}
+
+/**
+ * Dispatch for /api/globe/*. Same-origin only: there is no allowlist, no
+ * preflight, and no Access-Control-Allow-Origin on any response.
+ */
+export async function handleGlobe(request, env, url) {
+  const { pathname } = url;
+  if (pathname !== POSITIONS_PATH && pathname !== PRESENCE_PATH) {
+    return reply({ error: "Not found" }, 404, request);
+  }
+
+  // The page is served from this same origin, so a cross-origin caller is
+  // never one of ours. OPTIONS falls through to 405 for the same reason: no
+  // preflight is offered because no cross-origin use is supported.
+  const origin = request.headers.get("Origin");
+  if (origin && origin !== url.origin) {
+    return reply({ error: "Origin not allowed" }, 403, request);
+  }
+
+  if (!env.GLOBE) return reply({ error: "Globe presence is not configured" }, 503, request);
+  const presence = env.GLOBE.get(env.GLOBE.idFromName("global"));
+
+  if (pathname === POSITIONS_PATH) {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed(request, "GET, HEAD");
+    }
+    const snapshot = await (await presence.fetch("https://globe.invalid/positions")).json();
+    return reply(snapshot, 200, request);
+  }
+
+  if (request.method !== "POST" && request.method !== "DELETE") {
+    return methodNotAllowed(request, "POST, DELETE");
+  }
+
+  const parsed = await readToken(request);
+  if (parsed.error) return reply({ error: parsed.error }, parsed.status, request);
+
+  if (request.method === "DELETE") {
+    await presence.fetch("https://globe.invalid/presence", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: parsed.token }),
+    });
+    // Always 200, even for a token that was never here: no existence oracle.
+    return reply({ ok: true }, 200, request);
+  }
+
+  if (!(await withinRateLimit(request, env))) {
+    return reply({ error: "Too many requests" }, 429, request);
+  }
+
+  // The only source of coordinates, anywhere in this feature. They are snapped
+  // to a ~111 km cell here and the originals are never passed on.
+  const cell = snapToGrid(request.cf?.latitude, request.cf?.longitude);
+  if (!cell) return reply({ error: "Location unavailable" }, 503, request);
+
+  const upsert = await presence.fetch("https://globe.invalid/presence", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: parsed.token, cellKey: cell.cellKey }),
+  });
+  if (upsert.status === 429) return reply({ error: "Too many requests" }, 429, request);
+
+  return reply({ ok: true, ttlSeconds: TTL_SECONDS, heartbeatSeconds: HEARTBEAT_SECONDS }, 200, request);
+}

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import worker from "../worker.js";
 import {
   admits,
   aggregatePoints,
@@ -8,6 +9,7 @@ import {
   GRID_DEGREES,
   HEARTBEAT_SECONDS,
   isUuid,
+  limiterKey,
   MAX_COUNT,
   MAX_PER_CELL,
   MAX_TOKENS,
@@ -234,4 +236,194 @@ test("never leaks anything but points from its internal routes", async () => {
   const unknownRoute = await call(object, "/tokens");
   assert.equal(unknownRoute.status, 404);
   assert.deepEqual(await unknownRoute.json(), { ok: false, reason: "unknown" });
+});
+
+/* ---------- Worker routes (same-origin only, no CORS) ---------- */
+
+const SYDNEY = { latitude: "-33.87", longitude: "151.21" };
+
+function globeEnv(extra = {}) {
+  const object = new GlobePresence();
+  return {
+    GLOBE: {
+      idFromName: (name) => name,
+      get: () => ({ fetch: (url, init) => object.fetch(new Request(url, init)) }),
+    },
+    ...extra,
+  };
+}
+
+function globeRequest(path, { cf, body, ...options } = {}) {
+  const request = new Request(`https://ip.example${path}`, {
+    ...options,
+    ...(body === undefined ? {} : {
+      body: typeof body === "string" ? body : JSON.stringify(body),
+      headers: { "Content-Type": "application/json", ...options.headers },
+    }),
+  });
+  if (cf) Object.defineProperty(request, "cf", { value: cf });
+  return request;
+}
+
+const hit = (path, options, env = globeEnv()) => worker.fetch(globeRequest(path, options), env);
+
+test("publishes a pin from server-derived coordinates and reads it back", async () => {
+  const env = globeEnv();
+  const token = crypto.randomUUID();
+
+  const empty = await hit("/api/globe/positions", {}, env);
+  assert.equal(empty.status, 200);
+  assert.deepEqual(await empty.json(), { points: [], ttlSeconds: TTL_SECONDS });
+  assert.equal(empty.headers.get("Cache-Control"), "no-store");
+  assert.equal(empty.headers.get("X-Content-Type-Options"), "nosniff");
+  assert.equal(empty.headers.get("Vary"), "Origin");
+  // Same-origin feature: no CORS headers are handed out, ever.
+  assert.equal(empty.headers.get("Access-Control-Allow-Origin"), null);
+
+  const published = await hit("/api/globe/presence", { method: "POST", body: { token }, cf: SYDNEY }, env);
+  assert.equal(published.status, 200);
+  assert.deepEqual(await published.json(), {
+    ok: true, ttlSeconds: TTL_SECONDS, heartbeatSeconds: HEARTBEAT_SECONDS,
+  });
+
+  const filled = await (await hit("/api/globe/positions", {}, env)).json();
+  assert.deepEqual(filled.points, [{ lat: -33.5, lon: 151.5, count: 1 }]);
+});
+
+test("ignores any coordinate the client tries to submit", async () => {
+  const env = globeEnv();
+  // The body carries a plausible-looking position; request.cf says Sydney.
+  await hit("/api/globe/presence", {
+    method: "POST",
+    body: { token: crypto.randomUUID(), latitude: 55.75, longitude: 37.62, lat: 55.75, lon: 37.62, cellKey: "55.5:37.5" },
+    cf: SYDNEY,
+  }, env);
+  const { points } = await (await hit("/api/globe/positions", {}, env)).json();
+  assert.deepEqual(points, [{ lat: -33.5, lon: 151.5, count: 1 }], "only request.cf may place a pin");
+});
+
+test("removes a pin on delete and stays silent about unknown tokens", async () => {
+  const env = globeEnv();
+  const token = crypto.randomUUID();
+  await hit("/api/globe/presence", { method: "POST", body: { token }, cf: SYDNEY }, env);
+
+  const removed = await hit("/api/globe/presence", { method: "DELETE", body: { token } }, env);
+  assert.equal(removed.status, 200);
+  assert.deepEqual(await removed.json(), { ok: true });
+  assert.deepEqual((await (await hit("/api/globe/positions", {}, env)).json()).points, []);
+
+  const stranger = await hit("/api/globe/presence", { method: "DELETE", body: { token: crypto.randomUUID() } }, env);
+  assert.equal(stranger.status, 200);
+  assert.deepEqual(await stranger.json(), { ok: true });
+});
+
+test("rejects bad tokens, wrong content types, and oversized bodies", async () => {
+  for (const body of [{}, { token: "" }, { token: "not-a-uuid" }, { token: 7 }, { token: null }]) {
+    const response = await hit("/api/globe/presence", { method: "POST", body, cf: SYDNEY });
+    assert.equal(response.status, 400, JSON.stringify(body));
+    assert.deepEqual(await response.json(), { error: "Invalid token" });
+  }
+
+  const wrongType = await hit("/api/globe/presence", {
+    method: "POST", body: JSON.stringify({ token: crypto.randomUUID() }),
+    headers: { "Content-Type": "text/plain" }, cf: SYDNEY,
+  });
+  assert.equal(wrongType.status, 415);
+
+  const notJson = await hit("/api/globe/presence", { method: "POST", body: "{", cf: SYDNEY });
+  assert.equal(notJson.status, 400);
+
+  const oversized = await hit("/api/globe/presence", {
+    method: "POST", body: JSON.stringify({ token: crypto.randomUUID(), pad: "x".repeat(2048) }), cf: SYDNEY,
+  });
+  assert.equal(oversized.status, 400);
+  assert.deepEqual(await oversized.json(), { error: "Invalid or oversized JSON body" });
+});
+
+test("reports 503 when the edge supplies no location, and never guesses one", async () => {
+  const env = globeEnv();
+  for (const cf of [undefined, { latitude: "", longitude: "" }, { latitude: "abc", longitude: "1" }]) {
+    const response = await hit("/api/globe/presence", { method: "POST", body: { token: crypto.randomUUID() }, cf }, env);
+    assert.equal(response.status, 503, JSON.stringify(cf));
+    assert.deepEqual(await response.json(), { error: "Location unavailable" });
+  }
+  assert.deepEqual((await (await hit("/api/globe/positions", {}, env)).json()).points, []);
+});
+
+test("refuses cross-origin callers instead of answering a preflight", async () => {
+  const forbidden = await hit("/api/globe/positions", { headers: { Origin: "https://evil.example" } });
+  assert.equal(forbidden.status, 403);
+  assert.equal(forbidden.headers.get("Access-Control-Allow-Origin"), null);
+
+  // The retired mirror is not special-cased either.
+  const mirror = await hit("/api/globe/presence", {
+    method: "POST", body: { token: crypto.randomUUID() }, cf: SYDNEY,
+    headers: { Origin: "https://jaredsburrows.github.io" },
+  });
+  assert.equal(mirror.status, 403);
+
+  // Our own origin is fine.
+  const ours = await hit("/api/globe/positions", { headers: { Origin: "https://ip.example" } });
+  assert.equal(ours.status, 200);
+
+  // No preflight is offered, because no cross-origin use is supported.
+  const preflight = await hit("/api/globe/presence", { method: "OPTIONS" });
+  assert.equal(preflight.status, 405);
+  assert.equal(preflight.headers.get("Allow"), "POST, DELETE");
+});
+
+test("enforces one method set per globe route and 404s the rest", async () => {
+  const write = await hit("/api/globe/positions", { method: "POST", body: { token: crypto.randomUUID() } });
+  assert.equal(write.status, 405);
+  assert.equal(write.headers.get("Allow"), "GET, HEAD");
+
+  const read = await hit("/api/globe/presence", { method: "PUT", body: { token: crypto.randomUUID() } });
+  assert.equal(read.status, 405);
+  assert.equal(read.headers.get("Allow"), "POST, DELETE");
+
+  const head = await hit("/api/globe/positions", { method: "HEAD" });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+
+  const unknown = await hit("/api/globe/tokens");
+  assert.equal(unknown.status, 404);
+});
+
+test("fails soft when the durable object binding is absent", async () => {
+  const response = await worker.fetch(globeRequest("/api/globe/positions"), {});
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "Globe presence is not configured" });
+});
+
+test("treats the rate limiter as advisory: blocks on refusal, ignores outages", async () => {
+  const write = { method: "POST", body: { token: crypto.randomUUID() }, cf: SYDNEY,
+    headers: { "CF-Connecting-IP": "203.0.113.7" } };
+
+  const refused = await hit("/api/globe/presence", write,
+    globeEnv({ GLOBE_LIMITER: { limit: async () => ({ success: false }) } }));
+  assert.equal(refused.status, 429);
+
+  // A limiter outage must not take the feature down: the durable object caps
+  // and the server-derived coordinates are the real bound.
+  const broken = await hit("/api/globe/presence", write,
+    globeEnv({ GLOBE_LIMITER: { limit: async () => { throw new Error("limiter down"); } } }));
+  assert.equal(broken.status, 200);
+
+  // Reads are never limited; losing the globe to a neighbour's traffic would
+  // be a worse failure than a slightly stale count.
+  const read = await hit("/api/globe/positions", { headers: { "CF-Connecting-IP": "203.0.113.7" } },
+    globeEnv({ GLOBE_LIMITER: { limit: async () => ({ success: false }) } }));
+  assert.equal(read.status, 200);
+});
+
+test("keys the limiter per IPv6 /64 so a routed prefix is not 2^64 buckets", () => {
+  assert.equal(limiterKey("203.0.113.7"), "globe:203.0.113.7");
+  const first = limiterKey("2001:db8:1234:5678:1:2:3:4");
+  assert.equal(first, "globe:2001:db8:1234:5678::/64");
+  // Rotating the host half of the prefix must not buy a fresh budget.
+  assert.equal(limiterKey("2001:db8:1234:5678:dead:beef:cafe:1"), first);
+  // A different /64 is genuinely different.
+  assert.notEqual(limiterKey("2001:db8:1234:9999::1"), first);
+  assert.equal(limiterKey(""), null);
+  assert.equal(limiterKey(null), null);
 });

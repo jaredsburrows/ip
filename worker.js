@@ -4,16 +4,20 @@
  * (IP geolocation, ASN/ISP, TLS details, RTT).
  * POST /api/location — optional, rate-limited device-coordinate city lookup.
  *
- * Only these two paths reach this Worker (see run_worker_first in
- * wrangler.jsonc); every other path, including an unknown /api/* one, is
- * served directly from static assets, unbilled.
+ * GET /api/globe/positions, POST|DELETE /api/globe/presence — the live globe's
+ * ephemeral, opt-in presence map (see globe.js).
+ *
+ * Only these paths reach this Worker (see run_worker_first in wrangler.jsonc);
+ * every other path, including an unknown /api/* one, is served directly from
+ * static assets, unbilled.
  */
 
 import { connectingIP, ipFamily } from "./ip-info.js";
+import { handleGlobe } from "./globe.js";
 import { locationEnabled, lookupLocation } from "./location.js";
 
 // The Durable Object class must be exported from the Worker entry point for
-// the GLOBE binding to resolve; the globe routes themselves arrive in T11.
+// the GLOBE binding to resolve.
 export { GlobePresence } from "./globe.js";
 
 const API_PATH = "/api/info";
@@ -45,6 +49,9 @@ export default {
   async fetch(request, env = {}) {
     const url = new URL(request.url);
     const { pathname } = url;
+
+    // Live globe presence: same-origin only, no CORS, handled in globe.js.
+    if (pathname.startsWith("/api/globe/")) return handleGlobe(request, env, url);
 
     // Defensive: asset routing already keeps unknown paths away from here.
     if (pathname !== API_PATH && pathname !== LOCATION_PATH) {
