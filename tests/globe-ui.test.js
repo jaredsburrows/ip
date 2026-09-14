@@ -6,6 +6,9 @@ import vm from "node:vm";
 const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
 const html = read("index.html");
 const ui = read("globe-ui.js");
+// Comments explain what is deliberately absent, so strip them before asserting
+// that an API is genuinely unused.
+const uiCode = ui.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
 
 // The hard acceptance criterion: with the globe unopened, the page must issue
 // zero extra requests. These assertions are what keeps that true over time.
@@ -96,9 +99,10 @@ test("importing globe-ui.js does no work of its own", async () => {
 
 test("the globe client talks only to its own origin", () => {
   // No absolute URLs: no CDN, no mirror fallback, nothing for CSP to allow.
-  assert.deepEqual(ui.match(/https?:\/\/[^"'\s)]+/g), null);
-  assert.deepEqual(ui.match(/fetch\(([^,)]+)/g), ['fetch(POSITIONS_PATH']);
+  assert.deepEqual(uiCode.match(/https?:\/\/[^"'\s)]+/g), null);
+  assert.deepEqual(new Set(ui.match(/fetch\(([^,)]+)/g)), new Set(["fetch(POSITIONS_PATH", "fetch(PRESENCE_PATH"]));
   assert.match(ui, /const POSITIONS_PATH = "\/api\/globe\/positions"/);
+  assert.match(ui, /const PRESENCE_PATH = "\/api\/globe\/presence"/);
 });
 
 test("the globe assets are served, and cached for the right length of time", () => {
@@ -115,4 +119,31 @@ test("the globe assets are served, and cached for the right length of time", () 
   // The worker-only module and the provenance note are not assets.
   assert.ok(excluded.has("globe.js"));
   assert.ok(excluded.has("*.md"));
+});
+
+test("the share opt-in is unticked, unstored, and reversible", () => {
+  // Strict opt-in: the checkbox is created unchecked and nothing else sets it.
+  assert.match(ui, /checkbox\.checked = false;/);
+  assert.deepEqual(ui.match(/checkbox\.checked = (?!false)/g), null);
+
+  // The session token lives in page memory only.
+  assert.equal(/localStorage|sessionStorage|document\.cookie|indexedDB/.test(uiCode), false);
+  assert.match(ui, /shareToken = crypto\.randomUUID\(\)/);
+
+  // Untick, close, and page-away all remove the pin.
+  for (const trigger of [/checkbox\.checked\)[\s\S]{0,80}stopSharing/, /addEventListener\("close"[\s\S]{0,220}stopSharing/,
+    /addEventListener\("pagehide", \(\) => stopSharing/]) {
+    assert.match(ui, trigger);
+  }
+  assert.match(ui, /method: "DELETE"[\s\S]{0,160}keepalive: true/);
+});
+
+test("the client can never submit a position", () => {
+  // The only body the client ever sends is its own random token.
+  assert.deepEqual(ui.match(/body: JSON\.stringify\(([^)]+)\)/g), [
+    "body: JSON.stringify({ token })",
+    "body: JSON.stringify({ token })",
+  ]);
+  // No geolocation API, no coordinates, anywhere in the globe client.
+  assert.equal(/navigator\.geolocation|getCurrentPosition|watchPosition/.test(uiCode), false);
 });

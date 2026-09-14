@@ -16,6 +16,7 @@ const TEXTURE_URL = new URL("vendor/earth-blue-marble-2048.jpg", import.meta.url
 
 // Same-origin only: there is no cross-origin fallback and no CORS.
 const POSITIONS_PATH = "/api/globe/positions";
+const PRESENCE_PATH = "/api/globe/presence";
 
 // Matches the read cadence in the PRD; the write cadence comes from the server.
 const POLL_MS = 30000;
@@ -34,12 +35,21 @@ const OVERLAY_CSS = `
   }
   .globe-bar p { margin: 0; font-size: 0.9rem; }
   .globe-bar button { margin: 0; }
+  .globe-controls { display: flex; flex-direction: column; gap: 0.35rem; }
+  .globe-share { display: flex; gap: 0.5rem; align-items: baseline; }
+  .globe-share span { font-size: 0.9rem; }
+  .globe-disclosure { opacity: 0.8; }
 `;
 
 let overlay = null;
 let globe = null;
 let pollTimer = null;
 let libraryPromise = null;
+
+// Page memory only, for the lifetime of one share. Never written to
+// localStorage, sessionStorage, or a cookie; it dies with the tab.
+let shareToken = null;
+let shareTimer = null;
 
 /** Injects the vendored UMD bundle once; it exposes window.Globe. */
 function loadLibrary() {
@@ -72,22 +82,128 @@ function buildOverlay() {
   const bar = document.createElement("div");
   bar.className = "globe-bar";
 
+  const controls = document.createElement("div");
+  controls.className = "globe-controls";
+
   const status = document.createElement("p");
   status.setAttribute("aria-live", "polite");
   status.textContent = "Loading the globe…";
+
+  // Unchecked, always. Viewing the globe never publishes anything; this is
+  // the only thing that does.
+  const share = document.createElement("label");
+  share.className = "globe-share";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = false;
+  const shareText = document.createElement("span");
+  shareText.textContent = "Share my approximate area on the globe";
+  share.append(checkbox, shareText);
+
+  // The full disclosure, in the overlay, before anything is published.
+  const disclosure = document.createElement("p");
+  disclosure.className = "globe-disclosure";
+  disclosure.textContent = "Shares a ~100 km area derived from your IP address — never your " +
+    "device location, and never a street, city, or country name. Anyone viewing the globe can " +
+    "see it, and it disappears within 5 minutes of you leaving.";
+
+  const shareStatus = document.createElement("p");
+  shareStatus.setAttribute("aria-live", "polite");
 
   const close = document.createElement("button");
   close.type = "button";
   close.textContent = "Close";
   close.addEventListener("click", () => dialog.close());
 
-  bar.append(status, close);
+  controls.append(status, share, disclosure, shareStatus);
+  bar.append(controls, close);
   dialog.append(style, stage, bar);
+
+  checkbox.addEventListener("change", () => {
+    if (checkbox.checked) startSharing();
+    else stopSharing("Your pin has been removed.");
+  });
+
   // `dialog` gives Escape-to-close and focus handling without any extra code.
-  dialog.addEventListener("close", stopPolling);
+  dialog.addEventListener("close", () => {
+    stopPolling();
+    // Closing the globe is also an opt-out: re-opening starts unshared.
+    checkbox.checked = false;
+    stopSharing("");
+  });
+  // Last resort for a tab that is closed or backgrounded away; the pin would
+  // otherwise age out on its own within the TTL.
+  window.addEventListener("pagehide", () => stopSharing(""));
   document.body.append(dialog);
 
-  return { dialog, stage, status };
+  return { dialog, stage, status, checkbox, shareStatus };
+}
+
+/** Publishes or refreshes this page's pin. Returns the poll-worthy outcome. */
+async function heartbeat() {
+  const token = shareToken;
+  if (!token) return false;
+
+  let response;
+  try {
+    response = await fetch(PRESENCE_PATH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+  } catch {
+    overlay.shareStatus.textContent = "Could not reach the globe — your pin may be missing.";
+    return false;
+  }
+
+  // A token that never reached the server is not worth keeping around.
+  if (shareToken !== token) return false;
+
+  if (response.status === 503) {
+    overlay.checkbox.checked = false;
+    stopSharing("No approximate area is available for this connection, so there is nothing to share.");
+    return false;
+  }
+  if (response.status === 429) {
+    overlay.shareStatus.textContent = "The globe is busy — retrying shortly.";
+    return false;
+  }
+  if (!response.ok) {
+    overlay.shareStatus.textContent = "Could not add your pin right now.";
+    return false;
+  }
+
+  const { heartbeatSeconds } = await response.json();
+  if (!shareTimer && shareToken === token) {
+    // Cadence comes from the server so the two can never drift apart.
+    shareTimer = setInterval(heartbeat, heartbeatSeconds * 1000);
+  }
+  overlay.shareStatus.textContent = "You are on the globe. Untick to remove your pin.";
+  return true;
+}
+
+async function startSharing() {
+  // Random, unlinkable, and regenerated for every share.
+  shareToken = crypto.randomUUID();
+  overlay.shareStatus.textContent = "Adding your pin…";
+  if (await heartbeat()) poll();
+}
+
+function stopSharing(message) {
+  const token = shareToken;
+  shareToken = null;
+  if (shareTimer) clearInterval(shareTimer);
+  shareTimer = null;
+  if (overlay) overlay.shareStatus.textContent = message;
+  if (!token) return;
+
+  // keepalive so the delete still goes out when the page is going away.
+  fetch(PRESENCE_PATH, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+    keepalive: true,
+  }).then(() => poll(), () => {});
 }
 
 function resize() {
@@ -103,6 +219,7 @@ function describe(points) {
 }
 
 async function poll() {
+  if (!globe || !overlay?.dialog.open) return;
   try {
     const response = await fetch(POSITIONS_PATH, { headers: { Accept: "application/json" } });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
