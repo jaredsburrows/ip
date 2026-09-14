@@ -6,14 +6,15 @@ Shows your IP address and client/request information.
 [![Build](https://github.com/jaredsburrows/ip/actions/workflows/build.yml/badge.svg)](https://github.com/jaredsburrows/ip/actions)
 [![Twitter Follow](https://img.shields.io/twitter/follow/jaredsburrows.svg?style=social)](https://twitter.com/jaredsburrows)
 
-An `index.html` page with shared browser helpers (`ip-info.js`) and a small
-Worker API (`worker.js`, `location.js`) — no build step. One origin serves
-everything: <https://ip.jaredsburrows.workers.dev/>
+An `index.html` page with shared browser helpers (`ip-info.js`), an on-demand
+live globe (`globe-ui.js`), and a small Worker API (`worker.js`, `location.js`,
+`globe.js`) — no build step. One origin serves everything:
+<https://ip.jaredsburrows.workers.dev/>
 
 The page reads `GET /api/info`, a Worker endpoint that echoes what the server
 sees: the HTTP method, every request header, and Cloudflare's `request.cf` data
 (IP, ASN/ISP, city-level geolocation, TLS details, RTT). Static assets are served
-free from the edge — only the two API paths invoke the Worker
+free from the edge — only the listed API paths invoke the Worker
 (`run_worker_first` in `wrangler.jsonc`). The page always calls the API
 same-origin, so the API sends no CORS headers and rejects cross-origin browser
 callers. Independent browser requests to [ipify](https://www.ipify.org/) detect
@@ -46,6 +47,39 @@ Worker variable `TRUST_LOCATION_HEADERS` to `"true"` to fill missing geographic
 fields from those headers. Leave it unset on workers.dev or other deployments
 where that transform is not configured; arbitrary incoming headers are not
 trusted by default.
+
+### Live globe (opt-in)
+
+"View live globe" opens a 3D globe of everyone currently sharing an approximate
+area. Nothing globe-related is downloaded until that button is pressed: the
+page's only addition is the handler that dynamically imports `globe-ui.js`,
+which then loads the vendored `vendor/globe.gl.min.js` and Earth texture (see
+`vendor/PROVENANCE.md` for versions, hashes, and licenses). Vendoring keeps the
+CSP unchanged and keeps a third-party CDN out of the serving path.
+
+Opening the globe makes you a viewer only. An unticked "Share my approximate
+area on the globe" checkbox is the only thing that publishes a pin, and:
+
+- Coordinates come from Cloudflare's `request.cf` for that request. The browser
+  Geolocation API is never used here and the client cannot submit a position at
+  all, so nobody can place a pin where their connection is not.
+- The position is snapped server-side to the centre of a 1° grid cell (~111 km)
+  before it is stored. A pin is `{lat, lon, count}` — no city, region, country,
+  IP, user agent, or timestamp, and nothing joinable to another dataset.
+- Presence lives in one Durable Object's memory with a 5-minute TTL and is never
+  written to storage, KV, or logs; expired entries are swept on every request.
+  Unticking the box, closing the overlay, or leaving the page removes the pin
+  immediately, and an abandoned tab ages out within the TTL.
+- The only per-visitor value is a random `crypto.randomUUID()` held in page
+  memory (never `localStorage`, `sessionStorage`, or a cookie) to dedupe
+  heartbeats.
+
+`GET /api/globe/positions` is public and read-only; `POST`/`DELETE
+/api/globe/presence` take a token and nothing else. Abuse is bounded
+structurally — server-derived coordinates plus hard caps in the Durable Object
+(2,000 tokens, 200 per cell, counts displayed as 99+) — with the
+`GLOBE_LIMITER` binding as a courtesy layer on top rather than the real
+control.
 
 ### Optional device city lookup
 
@@ -117,7 +151,8 @@ Tests cover existing request metadata, origin rejection, routing and HEAD
 behavior;
 IP validation and Pseudo IPv4; flags; IPv4/IPv6 probe failures and timeouts;
 opt-in browser flows and fallback ordering; city lookup validation, rate
-limiting and upstream failure; and CSP/asset exclusions. Network services and
+limiting and upstream failure; the globe's grid snapping, TTL sweep, caps,
+presence routes and lazy loading; and CSP/asset exclusions. Network services and
 Cloudflare bindings are mocked, so no credentials or location sharing are
 needed. They do not validate the accuracy of a provider's live geolocation.
 
