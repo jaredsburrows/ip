@@ -11,6 +11,7 @@
 wrangler.jsonc
 worker.js
 location.js
+globe.js
 tests/
 package.json
 package-lock.json
