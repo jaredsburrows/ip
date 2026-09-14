@@ -12,6 +12,10 @@
 import { connectingIP, ipFamily } from "./ip-info.js";
 import { locationEnabled, lookupLocation } from "./location.js";
 
+// The Durable Object class must be exported from the Worker entry point for
+// the GLOBE binding to resolve; the globe routes themselves arrive in T11.
+export { GlobePresence } from "./globe.js";
+
 const API_PATH = "/api/info";
 const LOCATION_PATH = "/api/location";
 

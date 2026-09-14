@@ -1,13 +1,24 @@
 {
   // Static assets are served straight from the edge and are not billed as
-  // Worker invocations. Only the two API paths run the Worker script
-  // (run_worker_first), so scanner probes of other /api/* paths cost nothing
-  // and get the static 404 page; if the free-tier daily limit is ever hit,
-  // the API returns 429 while the static page keeps serving.
+  // Worker invocations. Only the API paths listed in run_worker_first run the
+  // Worker script, so scanner probes of other /api/* paths cost nothing and
+  // get the static 404 page; if the free-tier daily limit is ever hit, the API
+  // returns 429 while the static page keeps serving.
   "name": "ip",
   "account_id": "23fd1f78e6c723b48b52bd073092907a",
   "main": "worker.js",
   "compatibility_date": "2026-07-23",
+  // Live-globe presence. One global instance holds the presence map in memory
+  // only (see globe.js): the class is SQLite-backed because the free plan
+  // requires it, but nothing is ever written to storage.
+  "durable_objects": {
+    "bindings": [
+      { "name": "GLOBE", "class_name": "GlobePresence" }
+    ]
+  },
+  "migrations": [
+    { "tag": "globe-presence-v1", "new_sqlite_classes": ["GlobePresence"] }
+  ],
   "ratelimits": [
     {
       "name": "LOCATION_LIMITER",
@@ -20,11 +31,21 @@
       "name": "LOCATION_LIMITER_COARSE",
       "namespace_id": "2026091401",
       "simple": { "limit": 60, "period": 60 }
+    },
+    {
+      // Belt-and-braces on the public globe write path only. The design does
+      // not depend on it; the real bounds are the server-derived coordinates
+      // and the caps in globe.js.
+      "name": "GLOBE_LIMITER",
+      "namespace_id": "2026091402",
+      "simple": { "limit": 30, "period": 60 }
     }
   ],
   "assets": {
     "directory": ".",
     "not_found_handling": "404-page",
-    "run_worker_first": ["/api/info", "/api/location"]
+    // Every Worker-served path must appear here or it is served as a static
+    // asset and never reaches the Worker.
+    "run_worker_first": ["/api/info", "/api/location", "/api/globe/positions", "/api/globe/presence"]
   }
 }
