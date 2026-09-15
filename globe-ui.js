@@ -23,6 +23,11 @@ const PRESENCE_PATH = "/api/globe/presence";
 // Matches the read cadence in the PRD; the write cadence comes from the server.
 const POLL_MS = 30000;
 
+// How soon to try again after a heartbeat fails. Short enough that a visitor
+// who ticked the box lands on the globe once the blip passes, long enough not
+// to hammer a rate limiter that has just refused us.
+const RETRY_MS = 15000;
+
 const OVERLAY_CSS = `
   .globe-overlay {
     width: 100%; height: 100%; max-width: 100%; max-height: 100%;
@@ -102,12 +107,19 @@ function buildOverlay() {
   shareText.textContent = "Share my approximate area on the globe";
   share.append(checkbox, shareText);
 
-  // The full disclosure, in the overlay, before anything is published.
+  // The full disclosure, in the overlay, before anything is published. It has
+  // to describe what is published rather than which JSON fields are absent: a
+  // point on a public map is a country, and usually a region, to anyone who
+  // looks it up, whether or not the server ever names one.
   const disclosure = document.createElement("p");
   disclosure.className = "globe-disclosure";
-  disclosure.textContent = "Shares a ~100 km area derived from your IP address — never your " +
-    "device location, and never a street, city, or country name. Anyone viewing the globe can " +
-    "see it, and it disappears within 5 minutes of you leaving.";
+  disclosure.textContent = "Publishes an approximate point on a public map, worked out from your " +
+    "IP address — never your device location. It is not a street address, but anyone can look up " +
+    "which country, and roughly which part of it, the point falls in. You are never shown there " +
+    "on your own: a point appears at ~111 km precision only once at least 5 people are sharing " +
+    "in the same area, and otherwise merges into a ~1,100 km region, or a continent-sized one if " +
+    "nobody else is near you. Anyone viewing the globe can see it for as long as you are here, " +
+    "and it disappears within 5 minutes of you leaving.";
 
   const shareStatus = document.createElement("p");
   shareStatus.setAttribute("aria-live", "polite");
@@ -141,6 +153,31 @@ function buildOverlay() {
   return { dialog, stage, status, checkbox, shareStatus };
 }
 
+/**
+ * (Re)arms the heartbeat timer, replacing whatever was running. Returns
+ * whether a timer is actually pending, so nothing can promise a retry that was
+ * never scheduled.
+ */
+function scheduleHeartbeat(token, delayMs) {
+  if (shareTimer) clearInterval(shareTimer);
+  shareTimer = null;
+  // The share was cancelled (or restarted) while the request was in flight.
+  if (shareToken !== token) return false;
+  shareTimer = setInterval(heartbeat, delayMs);
+  return true;
+}
+
+/**
+ * Keeps a failed heartbeat retryable. Arming the timer only on success meant
+ * that if the *first* heartbeat failed there was no timer at all, so the box
+ * stayed ticked and the status promised a retry that never came (GBUG-1) —
+ * now the likelier case, since reads and deletes are rate limited too.
+ */
+function retryLater(token, message) {
+  const pending = scheduleHeartbeat(token, RETRY_MS);
+  if (pending && overlay) overlay.shareStatus.textContent = message;
+}
+
 /** Publishes or refreshes this page's pin. Returns the poll-worthy outcome. */
 async function heartbeat() {
   const token = shareToken;
@@ -154,7 +191,7 @@ async function heartbeat() {
       body: JSON.stringify({ token }),
     });
   } catch {
-    overlay.shareStatus.textContent = "Could not reach the globe — your pin may be missing.";
+    retryLater(token, "Could not reach the globe — retrying shortly.");
     return false;
   }
 
@@ -162,24 +199,24 @@ async function heartbeat() {
   if (shareToken !== token) return false;
 
   if (response.status === 503) {
+    // Nothing to publish from this connection, so retrying cannot help.
     overlay.checkbox.checked = false;
     stopSharing("No approximate area is available for this connection, so there is nothing to share.");
     return false;
   }
   if (response.status === 429) {
-    overlay.shareStatus.textContent = "The globe is busy — retrying shortly.";
+    retryLater(token, "The globe is busy — retrying shortly.");
     return false;
   }
   if (!response.ok) {
-    overlay.shareStatus.textContent = "Could not add your pin right now.";
+    retryLater(token, "Could not add your pin right now — retrying shortly.");
     return false;
   }
 
   const { heartbeatSeconds } = await response.json();
-  if (!shareTimer && shareToken === token) {
-    // Cadence comes from the server so the two can never drift apart.
-    shareTimer = setInterval(heartbeat, heartbeatSeconds * 1000);
-  }
+  // Cadence comes from the server so the two can never drift apart, and each
+  // success re-arms it: a retry interval never outlives the failure.
+  scheduleHeartbeat(token, heartbeatSeconds * 1000);
   overlay.shareStatus.textContent = "You are on the globe. Untick to remove your pin.";
   return true;
 }

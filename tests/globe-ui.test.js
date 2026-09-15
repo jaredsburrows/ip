@@ -209,3 +209,107 @@ test("the client can never submit a position", () => {
   // No geolocation API, no coordinates, anywhere in the globe client.
   assert.equal(/navigator\.geolocation|getCurrentPosition|watchPosition/.test(uiCode), false);
 });
+
+test("the share disclosure describes what is published, not just what is omitted", () => {
+  const disclosure = ui.match(/disclosure\.textContent = ([\s\S]*?);\n/)[1];
+  // GSEC-2: a published point IS a country, and usually a region, to anyone
+  // who cares to look it up. The old text promised the opposite ("never a
+  // street, city, or country name"), so consent was given on a false premise.
+  assert.equal(/never a street, city, or country name/.test(ui), false);
+  assert.match(disclosure, /country/);
+  assert.match(disclosure, /IP address/);
+  // The floor and the window that make it defensible belong in the same breath.
+  assert.match(disclosure, /5 people/);
+  assert.match(disclosure, /5 minutes/);
+  // ...and so does what happens to someone who is on their own.
+  assert.match(disclosure, /continent/);
+});
+
+/**
+ * Runs globe-ui.js in a sandbox and hands back the internals a share needs.
+ * Two edits, both asserted below: `export` is dropped (a script, not a module)
+ * and `import.meta.url` becomes a literal, since only a module has one.
+ */
+function shareHarness(fetchImpl) {
+  const source = read("globe-ui.js")
+    .replace(/^export /gm, "")
+    .replace(/import\.meta\.url/g, JSON.stringify("https://ip.example/globe-ui.js"));
+  assert.equal(/\bexport\b|import\.meta/.test(source), false);
+
+  const timers = [];
+  const context = {
+    URL,
+    crypto: { randomUUID: () => "11111111-2222-4333-8444-555555555555" },
+    fetch: fetchImpl,
+    setInterval: (fn, ms) => timers.push({ fn, ms }),
+    clearInterval: (id) => { if (id) timers[id - 1] = null; },
+  };
+  vm.createContext(context);
+  const internals = vm.runInContext(
+    `${source}\n;({ startSharing, setOverlay(value) { overlay = value; } });`, context);
+  return { internals, timers: () => timers.filter(Boolean) };
+}
+
+const fakeOverlay = () => ({
+  dialog: { open: true },
+  stage: {},
+  status: { textContent: "" },
+  checkbox: { checked: true },
+  shareStatus: { textContent: "" },
+});
+
+test("a refused first heartbeat schedules a retry instead of stopping in silence", async () => {
+  let attempts = 0;
+  const { internals, timers } = shareHarness(async () => {
+    attempts += 1;
+    return attempts === 1
+      ? new Response("", { status: 429 })
+      : new Response(JSON.stringify({ ok: true, ttlSeconds: 300, heartbeatSeconds: 60 }), { status: 200 });
+  });
+  const overlay = fakeOverlay();
+  internals.setOverlay(overlay);
+
+  await internals.startSharing();
+  // GBUG-1: the timer was armed only on success, so a first heartbeat that was
+  // refused left the box ticked and the status promising a retry that nothing
+  // had scheduled. Rate limiting the read and delete paths makes a 429 here
+  // more likely, not less.
+  assert.equal(timers().length, 1, "a retry must actually be scheduled");
+  assert.match(overlay.shareStatus.textContent, /retrying/);
+
+  // Running that retry recovers the share, and the server's cadence replaces
+  // the retry interval rather than running alongside it.
+  await timers()[0].fn();
+  assert.equal(attempts, 2);
+  assert.equal(overlay.shareStatus.textContent, "You are on the globe. Untick to remove your pin.");
+  assert.deepEqual(timers().map((timer) => timer.ms), [60000]);
+});
+
+test("a heartbeat that cannot reach the globe keeps trying, and says so", async () => {
+  for (const response of [
+    () => { throw new Error("offline"); },
+    () => new Response("", { status: 500 }),
+  ]) {
+    const { internals, timers } = shareHarness(async () => response());
+    const overlay = fakeOverlay();
+    internals.setOverlay(overlay);
+
+    await internals.startSharing();
+    assert.equal(timers().length, 1);
+    assert.match(overlay.shareStatus.textContent, /retrying/);
+    assert.equal(overlay.checkbox.checked, true, "the box only unticks when retrying cannot help");
+  }
+});
+
+test("no approximate area means the share stops, with no retry left running", async () => {
+  const { internals, timers } = shareHarness(async () => new Response("", { status: 503 }));
+  const overlay = fakeOverlay();
+  internals.setOverlay(overlay);
+
+  await internals.startSharing();
+  // Retrying cannot conjure a location, so this is the one failure that ends
+  // the share — and it must not leave a timer promising otherwise.
+  assert.deepEqual(timers(), []);
+  assert.equal(overlay.checkbox.checked, false);
+  assert.match(overlay.shareStatus.textContent, /nothing to share/);
+});
