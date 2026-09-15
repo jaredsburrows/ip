@@ -54,9 +54,25 @@ test("the globe leads the page, and its icon costs no request", () => {
   const body = html.slice(html.indexOf("<body>"));
   const above = body.slice(0, body.indexOf("<h2>Location</h2>"));
 
-  // Above the IP/location tables, not buried under them (T18).
-  assert.ok(body.indexOf('id="globe-heading"') < body.indexOf("<h2>Location</h2>"), "the globe must lead the page");
+  // Above the IP/location tables, not buried under them (T18), with the two
+  // things a visitor can actually press — the globe, then device location —
+  // together at the top and the IP-derived tables after them.
+  assert.ok(body.indexOf('id="globe-heading"') < body.indexOf('id="geo-heading"'), "the globe must lead the page");
+  assert.ok(body.indexOf('id="geo-heading"') < body.indexOf("<h2>Location</h2>"), "device location must sit beside the globe");
   assert.ok(body.indexOf('id="globe-button"') < body.indexOf("<table"), "the globe button must precede every table");
+
+  // One sentence, and no more: the account of what the globe publishes lives
+  // in README.md, so nothing here may grow back into a privacy summary.
+  const blurb = body.match(/<h2 id="globe-heading">[\s\S]*?<p class="note">([\s\S]*?)<\/p>/)[1].replace(/\s+/g, " ").trim();
+  assert.equal(blurb.split(/\.\s/).length, 1, blurb);
+  assert.ok(blurb.length <= 100, `the globe blurb is ${blurb.length} characters: ${blurb}`);
+
+  // The device-location blurb may not point at a control that the move put
+  // somewhere else; the city-lookup option is the element right after it.
+  const geo = body.slice(body.indexOf('id="geo-heading"'), body.indexOf("<h2>Location</h2>"));
+  assert.equal(/\b(below|above)\b/.test(geo.slice(0, geo.indexOf('id="city-lookup-option"'))), false,
+    "the device-location blurb must not claim a layout it no longer has");
+  assert.ok(geo.indexOf('id="city-lookup-option"') < geo.indexOf('id="geo-button"'));
 
   // An emoji glyph, exactly like the country flags elsewhere on the page: no
   // <img>, no icon font, no CSS background. Moving the section to the top must
@@ -241,11 +257,10 @@ test("opening the globe publishes, and closing it takes your area straight off",
 
   // No gate: the pin is published by the act of opening the globe.
   assert.ok(harness.calls.includes("POST /api/globe/presence"), harness.calls.join(", "));
-  // One button, and it is Close. The separate "Stop sharing my area" control
-  // was removed on request; this asserts that removing it did not take the
-  // only way to stop publishing with it.
-  assert.deepEqual(harness.overlay.dialog.children.at(-1).children.at(-1).children.map((b) => b.textContent),
-    ["Close"]);
+  // One button, and it is Close. Every other control the overlay ever had has
+  // now been removed on request; this asserts that stripping them did not take
+  // the only way to stop publishing with them.
+  assert.deepEqual(harness.overlay.dialog.children.at(-1).textContent, "Close");
 
   // Closing is the whole control, and it is on the DELETE path.
   harness.overlay.dialog.close();
@@ -283,26 +298,31 @@ test("the client can never submit a position", () => {
   assert.equal(/navigator\.geolocation|getCurrentPosition|watchPosition/.test(uiCode), false);
 });
 
-test("the share disclosure describes what is published, not just what is omitted", () => {
-  const disclosure = ui.match(/disclosure\.textContent = ([\s\S]*?);\n/)[1];
-  // With no tick-box in front of it, the disclosure has to say that opening
-  // the globe is itself the act that publishes, and how to undo it. With the
-  // "Stop sharing my area" button gone too, the way to undo it is closing, so
-  // the text has to name that and not a control that no longer exists.
-  assert.match(disclosure, /Opening the globe puts your approximate area on it/);
-  assert.match(disclosure, /Closing the globe takes it off/);
-  assert.equal(/Stop sharing my area/.test(ui), false, "no copy may name a removed control");
-  // GSEC-2: a published point IS a country, and usually a region, to anyone
-  // who cares to look it up. The old text promised the opposite ("never a
-  // street, city, or country name"), so consent was given on a false premise.
-  assert.equal(/never a street, city, or country name/.test(ui), false);
-  assert.match(disclosure, /country/);
-  assert.match(disclosure, /IP address/);
-  // The floor and the window that make it defensible belong in the same breath.
-  assert.match(disclosure, /5 people/);
-  assert.match(disclosure, /5 minutes/);
-  // ...and so does what happens to someone who is on their own.
-  assert.match(disclosure, /continent/);
+test("no copy about sharing survives in the overlay, in any form", () => {
+  // The visitor asked three times for the bottom bar to go, and each earlier
+  // attempt kept part of it. So this asserts the absence by name: the notice,
+  // the collapsed "What is shared?" disclosure, the status sentence, and every
+  // control that was ever beside them. The full account is in README.md, which
+  // is where it stays.
+  for (const gone of [
+    "globe-bar", "globe-controls", "globe-notice", "globe-disclosure", "globe-actions",
+    "What is shared", "Stop sharing my area", "Your approximate area",
+    "No areas are on the globe", "is on the globe",
+    // GSEC-2: a published point IS a country to anyone who looks it up, so the
+    // old claim to the contrary must never come back either.
+    "never a street, city, or country name",
+  ]) {
+    assert.equal(ui.includes(gone), false, `"${gone}" must not appear in globe-ui.js`);
+  }
+
+  // Nor may it return as a tooltip, a title, or an accessible name. The only
+  // attribute the overlay sets is the dialog's own name, and the only element
+  // label left is the one on the visitor's private "You" marker.
+  assert.deepEqual(uiCode.match(/setAttribute\([^)]*\)/g), ['setAttribute("aria-label", "Live globe")']);
+  assert.equal(/\.title\s*=|"title"|aria-describedby/.test(uiCode), false, "no tooltip may carry the disclosure");
+  assert.equal(/aria-live|textContent = "Loading the globe/.test(uiCode), false, "no status line may creep back in");
+  assert.equal(/createElement\("(p|details|summary|label|span)"\)/.test(uiCode), false,
+    "the overlay builds no text elements at all");
 });
 
 /**
@@ -466,38 +486,25 @@ test("no usable coordinates simply means no marker, and no error", async () => {
   assert.equal(globe.props.labelsData.length, 0, "open() with no argument must still work");
 });
 
-test("the footer is one line, with the full disclosure collapsed behind it", async () => {
+test("the overlay is a globe and a Close button, and nothing else", async () => {
   const { overlay } = await openHarness(publishing([]));
 
-  // The status sentence is gone too, at the visitor's request: no "your area
-  // is on the globe", no head count, nothing that narrates the globe back at
-  // them. The footer is a notice, a disclosure and a way out, and no more.
-  assert.equal(overlay.status, undefined);
-  assert.equal(/aria-live|textContent = "Loading the globe/.test(uiCode), false,
-    "no status line may creep back in");
-  assert.deepEqual(overlay.dialog.children.at(-1).children[0].children.map((p) => p.className),
-    ["globe-notice", "globe-disclosure"]);
+  // Asserted structurally, not by string, so a bar cannot come back wearing a
+  // different class name: the dialog holds its own stylesheet, the stage the
+  // renderer mounts on, and one button. Three children, and that is the whole
+  // overlay.
+  assert.deepEqual(overlay.dialog.children.map((node) => node.tagName), ["style", "div", "button"]);
+  assert.deepEqual(overlay.dialog.children.map((node) => node.className), ["", "globe-stage", "globe-close"]);
+  // Nothing else is built and held onto either — no notice, details, summary
+  // or status handle survives on the overlay object.
+  assert.deepEqual(Object.keys(overlay).sort(), ["close", "dialog", "stage"]);
 
-  // The five-line paragraph is off the face of the overlay, as asked — but the
-  // notice it carried is not gone, because with no tick-box in front of it
-  // this is the only disclosure a visitor gets before anything is published.
-  assert.equal(overlay.notice.textContent.split(". ").length, 1, overlay.notice.textContent);
-  assert.match(overlay.notice.textContent, /shared while this is open/);
-  assert.match(overlay.notice.textContent, /your browser only/);
-
-  // A native <details>, shut until it is asked for: no script, no styling
-  // framework, and no request of its own.
-  assert.equal(overlay.details.tagName, "details");
-  assert.equal(overlay.summary.tagName, "summary");
-  assert.match(overlay.summary.textContent, /What is shared/);
-  assert.match(uiCode, /details\.append\(summary, disclosure\)/);
-  assert.equal(/details\.open|setAttribute\("open"/.test(uiCode), false,
-    "the disclosure must start collapsed");
-
-  // Close stays, and is now the only button: it is how a visitor stops
-  // publishing, so the notice above has to point at it.
+  // Close is the only control, it has no label hung off it, and it is still
+  // the thing that stops publishing.
   assert.equal(overlay.close.textContent, "Close");
-  assert.match(overlay.notice.textContent, /close it/);
+  assert.deepEqual(overlay.close.children, []);
+  assert.deepEqual(Object.keys(overlay.close.attributes), []);
+  assert.deepEqual(Object.keys(overlay.close.listeners), ["click"]);
 });
 
 test("opening the globe leaves the renderer sized, textured and running", async () => {

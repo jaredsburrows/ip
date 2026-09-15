@@ -63,11 +63,10 @@ filenames carry a version or a content hash, so `_headers` can cache them
 Opening it also puts you on it. There is no tick-box gate: the button
 publishes your own approximate area, and closing the overlay takes it off again
 immediately — sharing is scoped to the globe being open, and the close handler
-and `pagehide` both send the delete. The overlay's footer is one sentence of
-notice, the full disclosure a press away in a collapsed `<details>`, and a
-Close button. Closing the overlay or leaving the page
-removes it too, and an opt-out is remembered for as long as the page stays
-open. What makes publishing by default defensible is not a consent dialog, it
+and `pagehide` both send the delete. The overlay itself is the globe and a
+Close button, and nothing else: the notice and the collapsed disclosure it used
+to carry were removed at the maintainer's request, so what follows here is the
+disclosure. What makes publishing by default defensible is not a consent dialog, it
 is how little is published — the roll-up floor below stops a lone visitor from
 ever becoming a city-sized pin, and it applies to everyone.
 

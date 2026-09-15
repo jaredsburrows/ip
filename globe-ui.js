@@ -7,11 +7,12 @@
  * below runs from open().
  *
  * Sharing is the default: opening the globe publishes this visitor's
- * approximate area, and a button in the overlay takes it straight back off.
- * What makes that defensible is not a tick-box, it is server-side (globe.js):
- * the client cannot submit a position at all, and a cell is published at
- * ~111 km only once at least 5 people share it — a lone visitor is rolled up
- * into a ~1,100 km region, or a continent-sized one.
+ * approximate area, and closing it takes that straight back off. What makes
+ * that defensible is not a tick-box, it is server-side (globe.js): the client
+ * cannot submit a position at all, and a cell is published at ~111 km only
+ * once at least 5 people share it — a lone visitor is rolled up into a
+ * ~1,100 km region, or a continent-sized one. The overlay itself carries no
+ * copy about any of this; that account lives in README.md.
  *
  * The globe also shows this visitor their own position, drawn from the
  * coordinates the page already received from /api/info and held in this module
@@ -52,21 +53,12 @@ const OVERLAY_CSS = `
   }
   .globe-overlay::backdrop { background: rgba(0, 0, 0, 0.6); }
   .globe-stage { width: 100%; height: 100%; }
-  .globe-bar {
-    position: absolute; inset: auto 0 0 0;
-    display: flex; gap: 1rem; align-items: center; justify-content: space-between;
-    padding: 0.75rem 1rem; background: Canvas; opacity: 0.92;
+  /* The only chrome left. Floated over a corner of the globe rather than sat
+     in a bar, because there is no longer anything for a bar to hold. */
+  .globe-close {
+    position: absolute; top: 1rem; right: 1rem;
+    margin: 0; font: inherit; padding: 0.4rem 0.75rem; white-space: nowrap;
   }
-  .globe-bar p { margin: 0; font-size: 0.9rem; }
-  .globe-bar button { margin: 0; }
-  .globe-controls { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
-  .globe-notice { opacity: 0.8; }
-  .globe-disclosure summary { cursor: pointer; opacity: 0.8; }
-  .globe-disclosure p { margin: 0.35rem 0 0; max-width: 60rem; opacity: 0.8; }
-  /* flex: none so the disclosure paragraph cannot squeeze the buttons into a
-     column of single words; nowrap so neither label breaks mid-phrase. */
-  .globe-actions { display: flex; flex: none; gap: 0.5rem; align-items: center; }
-  .globe-actions button { white-space: nowrap; }
 `;
 
 let overlay = null;
@@ -111,66 +103,22 @@ function buildOverlay() {
   const stage = document.createElement("div");
   stage.className = "globe-stage";
 
-  const bar = document.createElement("div");
-  bar.className = "globe-bar";
-
-  const controls = document.createElement("div");
-  controls.className = "globe-controls";
-
-  // The short form, always visible. With the tick-box gone this is the only
-  // notice a visitor gets before anything is published, so it cannot shrink to
-  // nothing — but it can be one line.
-  const notice = document.createElement("p");
-  notice.className = "globe-notice";
-  notice.textContent = "Your approximate area is shared while this is open and comes " +
-    "off the globe when you close it; the “You” marker is drawn in your browser only.";
-
-  // The full disclosure, one press away and closed by default. It used to run
-  // to five lines across the bottom of the globe, which is what the visitor
-  // asked to be rid of; a native <details> takes one line when shut and needs
-  // no script, no styling framework, and no extra request. It has to describe
-  // what is published rather than which JSON fields are absent: a point on a
-  // public map is a country, and usually a region, to anyone who looks it up,
-  // whether or not the server ever names one. With no tick-box in front of it,
-  // it also has to say plainly that opening the globe is what publishes, and
-  // how to undo that.
-  const details = document.createElement("details");
-  details.className = "globe-disclosure";
-
-  const summary = document.createElement("summary");
-  summary.textContent = "What is shared?";
-
-  const disclosure = document.createElement("p");
-  disclosure.textContent = "Opening the globe puts your approximate area on it, worked out from " +
-    "your IP address — never your device location. It is not a street address, but anyone can " +
-    "look up which country, and roughly which part of it, the point falls in. You are never shown " +
-    "there on your own: a point appears at ~111 km precision only once at least 5 people are " +
-    "sharing in the same area, and otherwise merges into a ~1,100 km region, or a continent-sized " +
-    "one if nobody else is near you. Anyone viewing the globe can see it for as long as you are " +
-    "here. Closing the globe takes it off immediately, and it disappears within 5 minutes of " +
-    "you leaving even if the tab never gets the chance. The “You” marker is the exception: it " +
-    "is drawn in your browser from the location already on this page, is never published, and " +
-    "nobody else can see it.";
-
-  details.append(summary, disclosure);
-
-  const actions = document.createElement("div");
-  actions.className = "globe-actions";
-
-  // Closing is the whole control. Sharing is scoped to the overlay being open,
-  // and this button, the dialog's own Escape handling, and pagehide all run the
-  // same close handler, which sends the DELETE. There is deliberately no second
-  // button for it: two ways to stop publishing, one of which is the obvious
-  // one, was a worse overlay than one way that always works.
+  // Closing is the whole control, and the whole of the overlay's chrome. The
+  // strip that used to run along the bottom — and everything it held — was
+  // removed at the visitor's request; the account of what the globe publishes
+  // belongs in README.md, not painted over the Earth on every open. Nothing
+  // replaces it here, in any form.
+  //
+  // This button, the dialog's own Escape handling, and pagehide all run the
+  // same close handler, which sends the DELETE, so the one control on screen
+  // is also the one that stops publishing.
   const close = document.createElement("button");
   close.type = "button";
+  close.className = "globe-close";
   close.textContent = "Close";
   close.addEventListener("click", () => dialog.close());
 
-  controls.append(notice, details);
-  actions.append(close);
-  bar.append(controls, actions);
-  dialog.append(style, stage, bar);
+  dialog.append(style, stage, close);
 
   // `dialog` gives Escape-to-close and focus handling without any extra code.
   dialog.addEventListener("close", () => {
@@ -187,7 +135,7 @@ function buildOverlay() {
   window.addEventListener("pagehide", () => stopSharing());
   document.body.append(dialog);
 
-  return { dialog, stage, notice, details, summary, close };
+  return { dialog, stage, close };
 }
 
 /** (Re)arms the heartbeat timer, replacing whatever was running. */

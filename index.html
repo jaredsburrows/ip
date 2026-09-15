@@ -78,14 +78,25 @@
     <h1>IP Address Info</h1>
 
     <h2 id="globe-heading">🌍 Live globe</h2>
-    <p class="note">Opens a 3D globe of everyone here right now, and puts your own approximate
-      area on it. The point is never finer than ~111&nbsp;km, and is merged into a far larger
-      region unless at least 5 people are sharing near you. Your own &ldquo;You&rdquo; marker is
-      drawn from the IP-based coordinates below, in your browser only &mdash; nobody else sees it.
-      Closing the globe takes your area off it, and it disappears within 5 minutes of you leaving
-      anyway. Nothing globe-related is downloaded until you press the button.</p>
+    <!-- One sentence, on purpose: what the globe publishes is documented in
+         README.md, not restated here, in the overlay, or in a title/aria-label. -->
+    <p class="note">Opens a 3D globe showing roughly where everyone here is right now.</p>
     <button id="globe-button" type="button">🌍 View live globe</button>
     <p class="note" id="globe-status" aria-live="polite"></p>
+
+    <h2 id="geo-heading">Device location (opt-in)</h2>
+    <p class="note">Uses your browser's location after permission, with its reported accuracy.
+      Coordinates stay on this page unless you enable city lookup.</p>
+    <p id="city-lookup-option" class="note" hidden><label>
+      <input id="city-lookup" type="checkbox"> Also find my city: send coordinates through this site's Worker to Geoapify.
+    </label></p>
+    <button id="geo-button" type="button">Use device location</button>
+    <table aria-labelledby="geo-heading" hidden id="geo-table">
+      <tbody id="geo-body" aria-live="polite"></tbody>
+    </table>
+    <p id="geo-attribution" class="note" hidden>City lookup powered by
+      <a href="https://www.geoapify.com/">Geoapify</a> and
+      <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>.</p>
 
     <h2>Location</h2>
     <p id="location-summary" aria-live="polite">Detecting location…</p>
@@ -114,20 +125,6 @@
     <table aria-labelledby="browser-heading">
       <tbody id="browser-body"></tbody>
     </table>
-
-    <h2 id="geo-heading">Device location (opt-in)</h2>
-    <p class="note">Uses your browser's location after permission, with its reported accuracy.
-      Coordinates stay on this page unless you enable city lookup below.</p>
-    <p id="city-lookup-option" class="note" hidden><label>
-      <input id="city-lookup" type="checkbox"> Also find my city: send coordinates through this site's Worker to Geoapify.
-    </label></p>
-    <button id="geo-button" type="button">Use device location</button>
-    <table aria-labelledby="geo-heading" hidden id="geo-table">
-      <tbody id="geo-body" aria-live="polite"></tbody>
-    </table>
-    <p id="geo-attribution" class="note" hidden>City lookup powered by
-      <a href="https://www.geoapify.com/">Geoapify</a> and
-      <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>.</p>
 
     <h2 id="response-headers-heading">Response headers</h2>
     <p class="note">HTTP response headers for this page, read via a same-origin request.</p>
