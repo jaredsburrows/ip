@@ -134,7 +134,9 @@ test("the globe assets are served, and cached for the right length of time", () 
   const headers = read("_headers");
   // Must expire with the page that imports it (the BUG-1 failure mode).
   const page = headers.match(/^\/\n {2}Cache-Control: (.+)$/m)[1];
-  assert.match(headers, new RegExp(`/globe-ui\\.js\\n {2}Cache-Control: ${page}`));
+  // Compared as plain text: a rule read out of a file is data, and escaping it
+  // well enough to be a safe pattern is a problem worth not having.
+  assert.ok(headers.includes(`/globe-ui.js\n  Cache-Control: ${page}`), "globe-ui.js must expire with the page");
 
   const excluded = new Set(read(".assetsignore").split("\n"));
   for (const path of ["globe-ui.js", "vendor/", "vendor/globe.gl-2.46.2.min.js"]) {
@@ -173,7 +175,10 @@ test("a year of immutable is promised only for URLs that carry their own bytes",
     // bytes mean a new URL, so a cached copy can never mask a patched file.
     assert.ok(/-\d+\.\d+\.\d+\./.test(name) || name.includes(sha256.slice(0, 8)), `${name} is not content-addressed`);
     // PROVENANCE.md documents this exact filename, and its hash is this file.
-    assert.match(provenance, new RegExp(`^## vendor/${name.replace(/\./g, "\\.")}$`, "m"));
+    // An exact line match, not a pattern: escaping only the dots in a filename
+    // leaves every other metacharacter live (CodeQL js/incomplete-sanitization).
+    assert.ok(provenance.split("\n").includes(`## vendor/${name}`),
+      `${name}: PROVENANCE.md has no heading for this file`);
     assert.ok(provenance.includes(sha256), `${name}: the SHA-256 in PROVENANCE.md is not this file`);
   }
 });
