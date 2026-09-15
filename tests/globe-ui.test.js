@@ -50,6 +50,22 @@ test("the lazy-load guard catches an uppercase tag, as a browser would", () => {
   assert.deepEqual(eagerGlobeTags('<SCRIPT type="module" src="ip-info.js"></SCRIPT><LINK rel=icon href=favicon.svg>'), []);
 });
 
+test("the globe leads the page, and its icon costs no request", () => {
+  const body = html.slice(html.indexOf("<body>"));
+  const above = body.slice(0, body.indexOf("<h2>Location</h2>"));
+
+  // Above the IP/location tables, not buried under them (T18).
+  assert.ok(body.indexOf('id="globe-heading"') < body.indexOf("<h2>Location</h2>"), "the globe must lead the page");
+  assert.ok(body.indexOf('id="globe-button"') < body.indexOf("<table"), "the globe button must precede every table");
+
+  // An emoji glyph, exactly like the country flags elsewhere on the page: no
+  // <img>, no icon font, no CSS background. Moving the section to the top must
+  // not put a single byte in front of first paint.
+  assert.match(body.match(/<h2 id="globe-heading">([^<]*)<\/h2>/)[1], /\u{1F30D}/u);
+  assert.match(body.match(/<button id="globe-button"[^>]*>([^<]*)<\/button>/)[1], /\u{1F30D}/u);
+  assert.deepEqual(eagerGlobeTags(above), [], "nothing above the fold may fetch a globe asset");
+});
+
 test("index.html stays inside the page-weight budget", () => {
   const bytes = Buffer.byteLength(html);
   assert.ok(bytes <= 30720, `index.html is ${bytes} bytes, over the 30 KB budget`);
