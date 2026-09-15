@@ -6,14 +6,15 @@ Shows your IP address and client/request information.
 [![Build](https://github.com/jaredsburrows/ip/actions/workflows/build.yml/badge.svg)](https://github.com/jaredsburrows/ip/actions)
 [![Twitter Follow](https://img.shields.io/twitter/follow/jaredsburrows.svg?style=social)](https://twitter.com/jaredsburrows)
 
-An `index.html` page with shared browser helpers (`ip-info.js`) and a small
-Worker API (`worker.js`, `location.js`) — no build step. One origin serves
-everything: <https://ip.jaredsburrows.workers.dev/>
+An `index.html` page with shared browser helpers (`ip-info.js`), an on-demand
+live globe (`globe-ui.js`), and a small Worker API (`worker.js`, `location.js`,
+`globe.js`) — no build step. One origin serves everything:
+<https://ip.jaredsburrows.workers.dev/>
 
 The page reads `GET /api/info`, a Worker endpoint that echoes what the server
 sees: the HTTP method, every request header, and Cloudflare's `request.cf` data
 (IP, ASN/ISP, city-level geolocation, TLS details, RTT). Static assets are served
-free from the edge — only the two API paths invoke the Worker
+free from the edge — only the listed API paths invoke the Worker
 (`run_worker_first` in `wrangler.jsonc`). The page always calls the API
 same-origin, so the API sends no CORS headers and rejects cross-origin browser
 callers. Independent browser requests to [ipify](https://www.ipify.org/) detect
@@ -46,6 +47,79 @@ Worker variable `TRUST_LOCATION_HEADERS` to `"true"` to fill missing geographic
 fields from those headers. Leave it unset on workers.dev or other deployments
 where that transform is not configured; arbitrary incoming headers are not
 trusted by default.
+
+### Live globe (opt-in)
+
+"View live globe" opens a 3D globe of everyone currently sharing an approximate
+area. Nothing globe-related is downloaded until that button is pressed: the
+page's only addition is the handler that dynamically imports `globe-ui.js`,
+which then loads the vendored `vendor/globe.gl-2.46.2.min.js` and Earth
+texture (see `vendor/PROVENANCE.md` for versions, hashes, and licenses).
+Vendoring keeps the CSP unchanged and keeps a third-party CDN out of the
+serving path. Those filenames carry a version or a content hash, so `_headers`
+can cache them `immutable` without ever stranding a browser on a stale copy.
+
+Opening the globe makes you a viewer only. An unticked "Share my approximate
+area on the globe" checkbox is the only thing that publishes a pin, and:
+
+**What a pin actually is.** It is an approximate point on a public map, worked
+out from the IP address of the connection. The response carries no city,
+region, or country string — but that is a statement about the JSON, not about
+what is disclosed: anyone can look up which country, and roughly which part of
+it, a published point falls in. What limits the disclosure is how coarse the
+point is and how few of them exist, so those are stated plainly below rather
+than dressed up as "no location is shared".
+
+- Coordinates come from Cloudflare's `request.cf` for that request. The browser
+  Geolocation API is never used here and the client cannot submit a position at
+  all, so nobody can place a pin where their connection is not.
+- The position is snapped server-side to the centre of a grid cell that is
+  ~111 km across at every latitude. Rows are 1° tall and the number of columns
+  in a row follows cos(latitude), so a cell does not narrow to 38 km at 70°N
+  the way a fixed 1° longitude step would; near the poles a whole parallel
+  becomes one circumpolar cell.
+- **Nobody is published alone at that size.** A cell is only shown at ~111 km
+  once at least 5 people share it. Below that threshold it is not dropped, it
+  is *rolled up*: into a ~1,100 km cell, published if that clears 5, and
+  otherwise into a continent-sized (~4,400 km) cell, which is published
+  whatever it holds. A solitary visitor therefore appears as a continent, never
+  as a city — and the globe still shows something at this site's traffic level,
+  which plain suppression would not.
+- **Counts are ranges, never integers.** A point is
+  `{lat, lon, count: "1-4" | "5-9" | "10-24" | "25-49" | "50+"}` — no city,
+  region, country, IP, user agent, or timestamp, and nothing joinable to
+  another dataset. An exact count is an identifier when it is small and a
+  traffic meter when it is large, so the wire format has no way to carry one.
+- Presence lives in one Durable Object's memory with a 5-minute TTL and is never
+  written to storage, KV, or logs; expired entries are swept on every request.
+  Unticking the box, closing the overlay, or leaving the page removes the pin
+  immediately, and an abandoned tab ages out within the TTL. The public
+  aggregate is edge-cached for 10 seconds, so a removal can take that long to
+  disappear from other people's screens.
+- The only per-visitor value is a random `crypto.randomUUID()` held in page
+  memory (never `localStorage`, `sessionStorage`, or a cookie) to dedupe
+  heartbeats.
+
+`GET /api/globe/positions` is public and read-only; `POST`/`DELETE
+/api/globe/presence` take a token and nothing else. Abuse is bounded
+structurally — server-derived coordinates plus hard caps in the Durable Object:
+200 pins per cell, 20 concurrent pins per source (an IPv4 address or an IPv6
+/64, stored only as a salted in-memory hash), and 2,000 globally. The global
+cap evicts the oldest pin in the fullest cell rather than refusing everyone
+new, so a filled map cannot be used to lock genuine visitors out. Every method
+is rate limited on top of that — `GLOBE_LIMITER` for writes, the far more
+generous `GLOBE_READ_LIMITER` for reads — and positions are served from a
+10-second edge cache so routine polling never reaches the Durable Object at
+all.
+
+**Retiring the globe (one-way door).** The `globe-presence-v1` migration in
+`wrangler.jsonc` must never be deleted or renumbered: migrations are
+append-only, so reverting that hunk makes `wrangler deploy` fail and blocks
+every deploy from this repo, including unrelated ones. To remove the feature,
+in a single commit, drop the `GLOBE` binding and the `GlobePresence` export and
+*append* `{ "tag": "globe-presence-v2", "deleted_classes": ["GlobePresence"] }`
+to the migrations array. There is no data to purge either way — presence is
+RAM-only.
 
 ### Optional device city lookup
 
@@ -117,7 +191,8 @@ Tests cover existing request metadata, origin rejection, routing and HEAD
 behavior;
 IP validation and Pseudo IPv4; flags; IPv4/IPv6 probe failures and timeouts;
 opt-in browser flows and fallback ordering; city lookup validation, rate
-limiting and upstream failure; and CSP/asset exclusions. Network services and
+limiting and upstream failure; the globe's grid snapping, TTL sweep, caps,
+presence routes and lazy loading; and CSP/asset exclusions. Network services and
 Cloudflare bindings are mocked, so no credentials or location sharing are
 needed. They do not validate the accuracy of a provider's live geolocation.
 

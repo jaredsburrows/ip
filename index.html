@@ -6,7 +6,9 @@
     <!-- Mirrors the _headers policy so the page is still protected when it is
          opened without Cloudflare's response headers (local preview, saved
          copy). frame-ancestors lives only in _headers (not expressible via
-         meta). Keep the two policies in sync. -->
+         meta). Keep the two policies in sync.
+         The live globe needs no entry here: its script and texture are
+         vendored and same-origin, so 'self' already covers them. -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.ipify.org https://api64.ipify.org; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <meta name="description" content="Shows your IP address and client/request information.">
     <meta name="author" content="Jared Burrows">
@@ -116,6 +118,13 @@
     <p id="geo-attribution" class="note" hidden>City lookup powered by
       <a href="https://www.geoapify.com/">Geoapify</a> and
       <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>.</p>
+
+    <h2 id="globe-heading">Live globe (opt-in)</h2>
+    <p class="note">Opens a 3D globe showing everyone who has chosen to share an approximate
+      area. Opening it makes you a viewer only &mdash; a separate, unticked checkbox inside
+      publishes your own pin. Nothing globe-related is downloaded until you press the button.</p>
+    <button id="globe-button" type="button">View live globe</button>
+    <p class="note" id="globe-status" aria-live="polite"></p>
 
     <h2 id="response-headers-heading">Response headers</h2>
     <p class="note">HTTP response headers for this page, read via a same-origin request.</p>
@@ -534,6 +543,30 @@
         });
       }
 
+      /* ---------- Live globe (nothing loads until the button is clicked) ---------- */
+
+      function initGlobeButton() {
+        const button = document.getElementById("globe-button");
+        const status = document.getElementById("globe-status");
+
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          status.textContent = "Loading the globe…";
+          try {
+            // This click is the only thing that ever fetches globe-ui.js, the
+            // vendored globe.gl bundle, or the Earth texture. Keep it that way:
+            // no preload, no prefetch, no top-level import.
+            const globe = await import("./globe-ui.js");
+            await globe.open();
+            status.textContent = "";
+          } catch {
+            status.textContent = "The globe could not be loaded.";
+          } finally {
+            button.disabled = false;
+          }
+        });
+      }
+
       /*
        * Read this page's HTTP *response* headers. A page cannot read the headers
        * of its own navigation response, so one extra same-origin GET is needed
@@ -575,6 +608,7 @@
       loadIpFamilies();
       loadClientHints();
       initGeolocation();
+      initGlobeButton();
       loadResponseHeaders();
     </script>
   </body>

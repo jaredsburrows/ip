@@ -16,3 +16,17 @@
 # never be paired with a stale module.
 /ip-info.js
   Cache-Control: public, max-age=300, must-revalidate
+# Same reasoning: the globe module expires with the page that imports it.
+/globe-ui.js
+  Cache-Control: public, max-age=300, must-revalidate
+# Content-addressed: each name carries the upstream version or a prefix of the
+# file's own SHA-256 (see vendor/PROVENANCE.md), so new bytes are always a new
+# URL, never a new body at one of these. That is what makes a year of immutable
+# safe — a patched upstream arrives under a different name and reaches every
+# browser at once, instead of waiting out a cache entry. Listed one file at a
+# time on purpose: a /vendor/* pattern would make the same promise for a future
+# file that turns out not to be versioned at all.
+/vendor/globe.gl-2.46.2.min.js
+  Cache-Control: public, max-age=31536000, immutable
+/vendor/earth-blue-marble-2048-c8fd8b5a.jpg
+  Cache-Control: public, max-age=31536000, immutable

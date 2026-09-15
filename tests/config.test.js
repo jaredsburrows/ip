@@ -18,11 +18,13 @@ test("both pages keep the HTTP CSP in sync and reach only the ipify probe hosts"
   }
 });
 
-test("only the two API paths run the Worker; every other path is a static asset", () => {
+test("only the listed API paths run the Worker; every other path is a static asset", () => {
   const config = read("wrangler.jsonc");
   const routes = JSON.parse(config.match(/"run_worker_first":\s*(\[[^\]]*\])/)[1]);
-  assert.deepEqual(routes, ["/api/info", "/api/location"]);
-  const source = read("worker.js");
+  assert.deepEqual(routes, ["/api/info", "/api/location", "/api/globe/positions", "/api/globe/presence"]);
+  // Every listed path must actually be handled, or it 404s at the Worker
+  // instead of being served as an asset.
+  const source = read("worker.js") + read("globe.js");
   for (const route of routes) assert.ok(source.includes(`"${route}"`), route);
   // Consequence: an unknown /api/* path never reaches worker.js, so it gets
   // the static HTML 404 page rather than the Worker's defensive JSON 404.
