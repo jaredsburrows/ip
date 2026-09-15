@@ -50,6 +50,22 @@ test("the lazy-load guard catches an uppercase tag, as a browser would", () => {
   assert.deepEqual(eagerGlobeTags('<SCRIPT type="module" src="ip-info.js"></SCRIPT><LINK rel=icon href=favicon.svg>'), []);
 });
 
+test("the globe leads the page, and its icon costs no request", () => {
+  const body = html.slice(html.indexOf("<body>"));
+  const above = body.slice(0, body.indexOf("<h2>Location</h2>"));
+
+  // Above the IP/location tables, not buried under them (T18).
+  assert.ok(body.indexOf('id="globe-heading"') < body.indexOf("<h2>Location</h2>"), "the globe must lead the page");
+  assert.ok(body.indexOf('id="globe-button"') < body.indexOf("<table"), "the globe button must precede every table");
+
+  // An emoji glyph, exactly like the country flags elsewhere on the page: no
+  // <img>, no icon font, no CSS background. Moving the section to the top must
+  // not put a single byte in front of first paint.
+  assert.match(body.match(/<h2 id="globe-heading">([^<]*)<\/h2>/)[1], /\u{1F30D}/u);
+  assert.match(body.match(/<button id="globe-button"[^>]*>([^<]*)<\/button>/)[1], /\u{1F30D}/u);
+  assert.deepEqual(eagerGlobeTags(above), [], "nothing above the fold may fetch a globe asset");
+});
+
 test("index.html stays inside the page-weight budget", () => {
   const bytes = Buffer.byteLength(html);
   assert.ok(bytes <= 30720, `index.html is ${bytes} bytes, over the 30 KB budget`);
@@ -183,21 +199,62 @@ test("a year of immutable is promised only for URLs that carry their own bytes",
   }
 });
 
-test("the share opt-in is unticked, unstored, and reversible", () => {
-  // Strict opt-in: the checkbox is created unchecked and nothing else sets it.
-  assert.match(ui, /checkbox\.checked = false;/);
-  assert.deepEqual(ui.match(/checkbox\.checked = (?!false)/g), null);
+test("sharing is unstored and reversible, and no tick-box gates it", () => {
+  // T19: the gate is gone, so nothing may reintroduce one by the back door.
+  assert.equal(/checkbox|type = "checkbox"/.test(uiCode), false);
 
-  // The session token lives in page memory only.
+  // The session token lives in page memory only. So does the opt-out: a
+  // remembered refusal must not become a tracking surface of its own.
   assert.equal(/localStorage|sessionStorage|document\.cookie|indexedDB/.test(uiCode), false);
   assert.match(ui, /shareToken = crypto\.randomUUID\(\)/);
+  assert.match(ui, /let optedOut = false;/);
 
-  // Untick, close, and page-away all remove the pin.
-  for (const trigger of [/checkbox\.checked\)[\s\S]{0,80}stopSharing/, /addEventListener\("close"[\s\S]{0,220}stopSharing/,
-    /addEventListener\("pagehide", \(\) => stopSharing/]) {
-    assert.match(ui, trigger);
-  }
+  // Opt out, close, and page-away all remove the pin. The close handler is
+  // matched as a whole block rather than within a character budget, so adding
+  // a comment to it can never quietly turn this assertion off.
+  const closeHandler = ui.match(/dialog\.addEventListener\("close", \(\) => \{([\s\S]*?)\n {2}\}\);/)[1];
+  assert.match(closeHandler, /stopSharing/);
+  assert.match(ui, /addEventListener\("pagehide", \(\) => stopSharing/);
   assert.match(ui, /method: "DELETE"[\s\S]{0,160}keepalive: true/);
+});
+
+test("opening the globe publishes, and the opt-out takes it straight back off", async () => {
+  const harness = await openHarness();
+
+  // No gate: the pin is published by the act of opening the globe.
+  assert.ok(harness.calls.includes("POST /api/globe/presence"), harness.calls.join(", "));
+  assert.equal(harness.overlay.shareStatus.textContent, "Your area is on the globe.");
+  assert.equal(harness.overlay.shareButton.textContent, "Stop sharing my area");
+
+  // ...and the way out is one visible press, on the DELETE path.
+  harness.overlay.shareButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(harness.calls.includes("DELETE /api/globe/presence"));
+  assert.match(harness.overlay.shareStatus.textContent, /taken off the globe/);
+  assert.equal(harness.overlay.shareButton.textContent, "Share my area");
+  // 30 s is the read poll, which keeps running because the globe is still on
+  // screen; the 60 s heartbeat is the one that must be gone.
+  assert.deepEqual(harness.timers().map((timer) => timer.ms), [30000], "no heartbeat may outlive the opt-out");
+
+  // A refusal outlives the overlay: closing and re-opening must not quietly
+  // put someone back on the map.
+  harness.overlay.dialog.close();
+  const before = harness.calls.filter((call) => call.startsWith("POST")).length;
+  await harness.open();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.calls.filter((call) => call.startsWith("POST")).length, before);
+  assert.equal(harness.overlay.shareButton.textContent, "Share my area");
+});
+
+test("a 200 with no cadence is a failure, not an interval of NaN", async () => {
+  const harness = await openHarness(async (path) => (path === "/api/globe/presence"
+    ? new Response("not json", { status: 200 })
+    : new Response(JSON.stringify({ points: [], ttlSeconds: 300 }), { status: 200 })));
+
+  // Every visitor runs this path now, so a malformed 200 must retry on a known
+  // interval rather than arm setInterval(fn, NaN) and never fire again.
+  assert.deepEqual(harness.timers().map((timer) => timer.ms), [30000, 15000]);
+  assert.match(harness.overlay.shareStatus.textContent, /retrying/);
 });
 
 test("the client can never submit a position", () => {
@@ -212,6 +269,10 @@ test("the client can never submit a position", () => {
 
 test("the share disclosure describes what is published, not just what is omitted", () => {
   const disclosure = ui.match(/disclosure\.textContent = ([\s\S]*?);\n/)[1];
+  // With no tick-box in front of it, the disclosure has to say that opening
+  // the globe is itself the act that publishes, and how to undo it.
+  assert.match(disclosure, /Opening the globe puts your approximate area on it/);
+  assert.match(disclosure, /Stop sharing my area/);
   // GSEC-2: a published point IS a country, and usually a region, to anyone
   // who cares to look it up. The old text promised the opposite ("never a
   // street, city, or country name"), so consent was given on a false premise.
@@ -226,16 +287,137 @@ test("the share disclosure describes what is published, not just what is omitted
 });
 
 /**
- * Runs globe-ui.js in a sandbox and hands back the internals a share needs.
- * Two edits, both asserted below: `export` is dropped (a script, not a module)
- * and `import.meta.url` becomes a literal, since only a module has one.
+ * Runs globe-ui.js in a sandbox and hands back the named internals. Two edits,
+ * both asserted here: `export` is dropped (a script, not a module) and
+ * `import.meta.url` becomes a literal, since only a module has one.
  */
-function shareHarness(fetchImpl) {
+function loadUi(context, expose) {
   const source = read("globe-ui.js")
     .replace(/^export /gm, "")
     .replace(/import\.meta\.url/g, JSON.stringify("https://ip.example/globe-ui.js"));
   assert.equal(/\bexport\b|import\.meta/.test(source), false);
+  vm.createContext(context);
+  return vm.runInContext(`${source}\n;(${expose});`, context);
+}
 
+/** The slice of a DOM node globe-ui.js actually touches. */
+function fakeNode(tag) {
+  const node = {
+    tagName: tag,
+    children: [],
+    listeners: {},
+    attributes: {},
+    textContent: "",
+    className: "",
+    // The size a full-viewport dialog reports once showModal() has laid it
+    // out — the number resize() is supposed to hand to the renderer.
+    clientWidth: 1280,
+    clientHeight: 720,
+    addEventListener(name, fn) { (node.listeners[name] ??= []).push(fn); },
+    setAttribute(name, value) { node.attributes[name] = value; },
+    append(...kids) { node.children.push(...kids); },
+    dispatch(name) { for (const fn of node.listeners[name] ?? []) fn(); },
+    showModal() { node.open = true; },
+    close() { node.open = false; node.dispatch("close"); },
+  };
+  return node;
+}
+
+/** Stands in for the vendored UMD bundle, recording what it is asked to do. */
+function fakeGlobe() {
+  const controls = {};
+  const globe = { mountedOn: null, running: false, props: {}, animation: [], controls: () => controls };
+  for (const name of ["backgroundColor", "globeImageUrl", "pointsData", "pointLat", "pointLng",
+    "pointColor", "pointAltitude", "pointRadius", "pointLabel", "width", "height"]) {
+    globe[name] = (value) => { globe.props[name] = value; return globe; };
+  }
+  globe.resumeAnimation = () => { globe.running = true; globe.animation.push("resume"); return globe; };
+  globe.pauseAnimation = () => { globe.running = false; globe.animation.push("pause"); return globe; };
+  return globe;
+}
+
+/**
+ * Opens the overlay against a fake DOM and a fake globe.gl.
+ *
+ * This is NOT pixel verification — node cannot rasterise WebGL, so nothing
+ * here proves the Earth is painted. It is the closest honest proxy: the
+ * renderer is mounted on the stage, is given a non-zero size and the vendored
+ * texture, and is still running when open() returns. The bug this catches
+ * (T17) failed exactly that last assertion in a real browser too.
+ */
+const respondOk = async (path) => (path === "/api/globe/presence"
+  ? new Response(JSON.stringify({ ok: true, ttlSeconds: 300, heartbeatSeconds: 60 }), { status: 200 })
+  : new Response(JSON.stringify({ points: [], ttlSeconds: 300 }), { status: 200 }));
+
+async function openHarness(respond = respondOk) {
+  const globe = fakeGlobe();
+  const timers = [];
+  const calls = [];
+  const document = {
+    createElement: (tag) => fakeNode(tag),
+    head: fakeNode("head"),
+    body: fakeNode("body"),
+  };
+  const context = {
+    URL,
+    document,
+    window: { matchMedia: () => ({ matches: true }), addEventListener() {} },
+    crypto: { randomUUID: () => "11111111-2222-4333-8444-555555555555" },
+    fetch: async (path, options = {}) => {
+      calls.push(`${options.method ?? "GET"} ${path}`);
+      return respond(path, options);
+    },
+    setInterval: (fn, ms) => timers.push({ fn, ms }),
+    clearInterval: (id) => { if (id) timers[id - 1] = null; },
+  };
+  // Appending the <script> is what "loads" the bundle, exactly as a browser
+  // would: the tag exposes window.Globe and then fires load.
+  document.head.append = (node) => {
+    context.window.Globe = function (stage) { globe.mountedOn = stage; return globe; };
+    node.dispatch("load");
+  };
+
+  const internals = loadUi(context, "{ open, overlay: () => overlay }");
+  await internals.open();
+  // open() fires the first heartbeat without awaiting it, so let the
+  // already-resolved fetch chain drain before anything is asserted.
+  await new Promise((resolve) => setImmediate(resolve));
+  return {
+    globe,
+    calls,
+    open: internals.open,
+    overlay: internals.overlay(),
+    timers: () => timers.filter(Boolean),
+  };
+}
+
+test("opening the globe leaves the renderer sized, textured and running", async () => {
+  const { globe, overlay } = await openHarness();
+
+  assert.equal(globe.mountedOn, overlay.stage, "the renderer must be mounted on the visible stage");
+  // A 0x0 canvas renders black just as reliably as a stopped loop does.
+  assert.deepEqual([globe.props.width, globe.props.height], [1280, 720]);
+  assert.equal(globe.props.globeImageUrl, "https://ip.example/vendor/earth-blue-marble-2048-c8fd8b5a.jpg");
+  // T17: open() resumed the animation and then startPolling() -> stopPolling()
+  // paused it again one statement later, so no frame was ever drawn. Order
+  // matters, not just the final state.
+  assert.deepEqual(globe.animation, ["resume"]);
+  assert.equal(globe.running, true, "the render loop must still be running when open() returns");
+});
+
+test("closing the globe stops the render loop, and re-opening starts it again", async () => {
+  const { globe, overlay } = await openHarness();
+
+  overlay.dialog.close();
+  // Nothing on screen, so nothing should be burning frames.
+  assert.equal(globe.running, false);
+
+  overlay.dialog.showModal();
+  globe.resumeAnimation();
+  assert.equal(globe.running, true);
+});
+
+function shareHarness(fetchImpl) {
   const timers = [];
   const context = {
     URL,
@@ -244,9 +426,7 @@ function shareHarness(fetchImpl) {
     setInterval: (fn, ms) => timers.push({ fn, ms }),
     clearInterval: (id) => { if (id) timers[id - 1] = null; },
   };
-  vm.createContext(context);
-  const internals = vm.runInContext(
-    `${source}\n;({ startSharing, setOverlay(value) { overlay = value; } });`, context);
+  const internals = loadUi(context, "{ startSharing, setOverlay(value) { overlay = value; } }");
   return { internals, timers: () => timers.filter(Boolean) };
 }
 
@@ -254,7 +434,7 @@ const fakeOverlay = () => ({
   dialog: { open: true },
   stage: {},
   status: { textContent: "" },
-  checkbox: { checked: true },
+  shareButton: { textContent: "" },
   shareStatus: { textContent: "" },
 });
 
@@ -281,7 +461,7 @@ test("a refused first heartbeat schedules a retry instead of stopping in silence
   // the retry interval rather than running alongside it.
   await timers()[0].fn();
   assert.equal(attempts, 2);
-  assert.equal(overlay.shareStatus.textContent, "You are on the globe. Untick to remove your pin.");
+  assert.equal(overlay.shareStatus.textContent, "Your area is on the globe.");
   assert.deepEqual(timers().map((timer) => timer.ms), [60000]);
 });
 
@@ -297,7 +477,8 @@ test("a heartbeat that cannot reach the globe keeps trying, and says so", async 
     await internals.startSharing();
     assert.equal(timers().length, 1);
     assert.match(overlay.shareStatus.textContent, /retrying/);
-    assert.equal(overlay.checkbox.checked, true, "the box only unticks when retrying cannot help");
+    assert.equal(overlay.shareButton.textContent, "Stop sharing my area",
+      "a retryable failure keeps the share, and the control keeps saying so");
   }
 });
 
@@ -310,6 +491,6 @@ test("no approximate area means the share stops, with no retry left running", as
   // Retrying cannot conjure a location, so this is the one failure that ends
   // the share — and it must not leave a timer promising otherwise.
   assert.deepEqual(timers(), []);
-  assert.equal(overlay.checkbox.checked, false);
+  assert.equal(overlay.shareButton.textContent, "Share my area");
   assert.match(overlay.shareStatus.textContent, /nothing to share/);
 });

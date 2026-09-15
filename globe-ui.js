@@ -6,8 +6,12 @@
  * page load. Importing this module must stay side-effect free: everything
  * below runs from open().
  *
- * Read-only by default. Opening the globe makes you a viewer; publishing a pin
- * is a separate, unticked opt-in.
+ * Sharing is the default: opening the globe publishes this visitor's
+ * approximate area, and a button in the overlay takes it straight back off.
+ * What makes that defensible is not a tick-box, it is server-side (globe.js):
+ * the client cannot submit a position at all, and a cell is published at
+ * ~111 km only once at least 5 people share it — a lone visitor is rolled up
+ * into a ~1,100 km region, or a continent-sized one.
  */
 
 // Resolved against this module, so the paths hold wherever the site is served.
@@ -24,8 +28,9 @@ const PRESENCE_PATH = "/api/globe/presence";
 const POLL_MS = 30000;
 
 // How soon to try again after a heartbeat fails. Short enough that a visitor
-// who ticked the box lands on the globe once the blip passes, long enough not
-// to hammer a rate limiter that has just refused us.
+// lands on the globe once the blip passes, long enough not to hammer a rate
+// limiter that has just refused us. Every visitor takes this path now, so it
+// has to be the quiet kind of retry.
 const RETRY_MS = 15000;
 
 const OVERLAY_CSS = `
@@ -43,8 +48,10 @@ const OVERLAY_CSS = `
   .globe-bar p { margin: 0; font-size: 0.9rem; }
   .globe-bar button { margin: 0; }
   .globe-controls { display: flex; flex-direction: column; gap: 0.35rem; }
-  .globe-share { display: flex; gap: 0.5rem; align-items: baseline; }
-  .globe-share span { font-size: 0.9rem; }
+  /* flex: none so the disclosure paragraph cannot squeeze the buttons into a
+     column of single words; nowrap so neither label breaks mid-phrase. */
+  .globe-actions { display: flex; flex: none; gap: 0.5rem; align-items: center; }
+  .globe-actions button { white-space: nowrap; }
   .globe-disclosure { opacity: 0.8; }
 `;
 
@@ -57,6 +64,10 @@ let libraryPromise = null;
 // localStorage, sessionStorage, or a cookie; it dies with the tab.
 let shareToken = null;
 let shareTimer = null;
+// Set when the visitor takes themselves off the globe. Also page memory only,
+// and deliberately sticky for as long as the page lives: closing and
+// re-opening the overlay must not quietly put them back on.
+let optedOut = false;
 
 /** Injects the vendored UMD bundle once; it exposes window.Globe. */
 function loadLibrary() {
@@ -96,53 +107,57 @@ function buildOverlay() {
   status.setAttribute("aria-live", "polite");
   status.textContent = "Loading the globe…";
 
-  // Unchecked, always. Viewing the globe never publishes anything; this is
-  // the only thing that does.
-  const share = document.createElement("label");
-  share.className = "globe-share";
-  const checkbox = document.createElement("input");
-  checkbox.type = "checkbox";
-  checkbox.checked = false;
-  const shareText = document.createElement("span");
-  shareText.textContent = "Share my approximate area on the globe";
-  share.append(checkbox, shareText);
-
-  // The full disclosure, in the overlay, before anything is published. It has
-  // to describe what is published rather than which JSON fields are absent: a
+  // The full disclosure, on screen the moment anything is published. It has to
+  // describe what is published rather than which JSON fields are absent: a
   // point on a public map is a country, and usually a region, to anyone who
-  // looks it up, whether or not the server ever names one.
+  // looks it up, whether or not the server ever names one. With no tick-box in
+  // front of it, it also has to say plainly that opening the globe is what
+  // publishes, and how to undo that.
   const disclosure = document.createElement("p");
   disclosure.className = "globe-disclosure";
-  disclosure.textContent = "Publishes an approximate point on a public map, worked out from your " +
-    "IP address — never your device location. It is not a street address, but anyone can look up " +
-    "which country, and roughly which part of it, the point falls in. You are never shown there " +
-    "on your own: a point appears at ~111 km precision only once at least 5 people are sharing " +
-    "in the same area, and otherwise merges into a ~1,100 km region, or a continent-sized one if " +
-    "nobody else is near you. Anyone viewing the globe can see it for as long as you are here, " +
-    "and it disappears within 5 minutes of you leaving.";
+  disclosure.textContent = "Opening the globe puts your approximate area on it, worked out from " +
+    "your IP address — never your device location. It is not a street address, but anyone can " +
+    "look up which country, and roughly which part of it, the point falls in. You are never shown " +
+    "there on your own: a point appears at ~111 km precision only once at least 5 people are " +
+    "sharing in the same area, and otherwise merges into a ~1,100 km region, or a continent-sized " +
+    "one if nobody else is near you. Anyone viewing the globe can see it for as long as you are " +
+    "here, and it disappears within 5 minutes of you leaving. Press “Stop sharing my area” " +
+    "to take it off now.";
 
   const shareStatus = document.createElement("p");
   shareStatus.setAttribute("aria-live", "polite");
+
+  const actions = document.createElement("div");
+  actions.className = "globe-actions";
+
+  // The opt-out. Always present, always one press away, and it is the same
+  // control that puts a visitor back on if they change their mind.
+  const shareButton = document.createElement("button");
+  shareButton.type = "button";
+  shareButton.addEventListener("click", () => {
+    optedOut = shareToken !== null;
+    if (optedOut) stopSharing("Your area has been taken off the globe.");
+    else startSharing();
+  });
 
   const close = document.createElement("button");
   close.type = "button";
   close.textContent = "Close";
   close.addEventListener("click", () => dialog.close());
 
-  controls.append(status, share, disclosure, shareStatus);
-  bar.append(controls, close);
+  controls.append(status, disclosure, shareStatus);
+  actions.append(shareButton, close);
+  bar.append(controls, actions);
   dialog.append(style, stage, bar);
-
-  checkbox.addEventListener("change", () => {
-    if (checkbox.checked) startSharing();
-    else stopSharing("Your pin has been removed.");
-  });
 
   // `dialog` gives Escape-to-close and focus handling without any extra code.
   dialog.addEventListener("close", () => {
     stopPolling();
-    // Closing the globe is also an opt-out: re-opening starts unshared.
-    checkbox.checked = false;
+    // Nothing is on screen now, so nothing should be drawing frames.
+    globe?.pauseAnimation();
+    // Closing the globe takes the pin off now rather than letting it age out.
+    // It is not an opt-out, though: re-opening starts sharing again, because
+    // opening the globe is what sharing means here.
     stopSharing("");
   });
   // Last resort for a tab that is closed or backgrounded away; the pin would
@@ -150,7 +165,7 @@ function buildOverlay() {
   window.addEventListener("pagehide", () => stopSharing(""));
   document.body.append(dialog);
 
-  return { dialog, stage, status, checkbox, shareStatus };
+  return { dialog, stage, status, shareButton, shareStatus };
 }
 
 /**
@@ -167,11 +182,18 @@ function scheduleHeartbeat(token, delayMs) {
   return true;
 }
 
+/** Labels the opt-out control for what pressing it will actually do. */
+function renderShareButton() {
+  if (!overlay) return;
+  overlay.shareButton.textContent = shareToken ? "Stop sharing my area" : "Share my area";
+}
+
 /**
  * Keeps a failed heartbeat retryable. Arming the timer only on success meant
- * that if the *first* heartbeat failed there was no timer at all, so the box
- * stayed ticked and the status promised a retry that never came (GBUG-1) —
- * now the likelier case, since reads and deletes are rate limited too.
+ * that if the *first* heartbeat failed there was no timer at all, so the
+ * status promised a retry that never came (GBUG-1). That path now runs in
+ * every visitor's first second in the overlay, not just an opted-in
+ * minority's, so it has to hold.
  */
 function retryLater(token, message) {
   const pending = scheduleHeartbeat(token, RETRY_MS);
@@ -200,7 +222,6 @@ async function heartbeat() {
 
   if (response.status === 503) {
     // Nothing to publish from this connection, so retrying cannot help.
-    overlay.checkbox.checked = false;
     stopSharing("No approximate area is available for this connection, so there is nothing to share.");
     return false;
   }
@@ -209,22 +230,29 @@ async function heartbeat() {
     return false;
   }
   if (!response.ok) {
-    retryLater(token, "Could not add your pin right now — retrying shortly.");
+    retryLater(token, "Could not add your area right now — retrying shortly.");
     return false;
   }
 
-  const { heartbeatSeconds } = await response.json();
   // Cadence comes from the server so the two can never drift apart, and each
-  // success re-arms it: a retry interval never outlives the failure.
-  scheduleHeartbeat(token, heartbeatSeconds * 1000);
-  overlay.shareStatus.textContent = "You are on the globe. Untick to remove your pin.";
+  // success re-arms it: a retry interval never outlives the failure. A 200
+  // carrying something other than a cadence is treated as a failure, rather
+  // than as licence to run an interval of NaN milliseconds.
+  const cadence = await response.json().then((body) => body?.heartbeatSeconds, () => null);
+  if (!Number.isFinite(cadence) || cadence <= 0) {
+    retryLater(token, "Could not add your area right now — retrying shortly.");
+    return false;
+  }
+  scheduleHeartbeat(token, cadence * 1000);
+  overlay.shareStatus.textContent = "Your area is on the globe.";
   return true;
 }
 
 async function startSharing() {
   // Random, unlinkable, and regenerated for every share.
   shareToken = crypto.randomUUID();
-  overlay.shareStatus.textContent = "Adding your pin…";
+  renderShareButton();
+  overlay.shareStatus.textContent = "Adding your area…";
   if (await heartbeat()) poll();
 }
 
@@ -233,6 +261,7 @@ function stopSharing(message) {
   shareToken = null;
   if (shareTimer) clearInterval(shareTimer);
   shareTimer = null;
+  renderShareButton();
   if (overlay) overlay.shareStatus.textContent = message;
   if (!token) return;
 
@@ -253,7 +282,7 @@ function resize() {
 // Counts arrive as ranges ("5-9"), never as integers, so there is no exact
 // head count to add up here — by design, not by omission.
 function describe(points) {
-  if (points.length === 0) return "No one is sharing right now — tick the box to be the first pin.";
+  if (points.length === 0) return "No areas are on the globe right now.";
   return points.length === 1 ? "1 area is sharing right now." : `${points.length} areas are sharing right now.`;
 }
 
@@ -277,10 +306,16 @@ function startPolling() {
   pollTimer = setInterval(poll, POLL_MS);
 }
 
+/**
+ * Stops the read loop, and only that. Pausing the renderer from here was the
+ * blank-globe bug (T17): startPolling() begins by stopping the previous loop,
+ * so open()'s `resumeAnimation(); startPolling();` killed the render loop one
+ * statement after starting it and no frame was ever drawn. Whether the canvas
+ * is visible is the dialog's business, so the dialog pauses it.
+ */
 function stopPolling() {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = null;
-  globe?.pauseAnimation();
 }
 
 /** Opens the overlay, loading the library and texture on first use. */
@@ -313,4 +348,11 @@ export async function open() {
   resize();
   globe.resumeAnimation();
   startPolling();
+
+  // Sharing is the default: opening the globe is what publishes your
+  // approximate area. Deliberately not awaited — the globe is already on
+  // screen and a slow write must not hold the page's button disabled;
+  // heartbeat() reports and retries its own failures.
+  if (!optedOut && !shareToken) startSharing();
+  renderShareButton();
 }

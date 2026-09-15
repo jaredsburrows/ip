@@ -48,19 +48,25 @@ fields from those headers. Leave it unset on workers.dev or other deployments
 where that transform is not configured; arbitrary incoming headers are not
 trusted by default.
 
-### Live globe (opt-in)
+### Live globe
 
-"View live globe" opens a 3D globe of everyone currently sharing an approximate
-area. Nothing globe-related is downloaded until that button is pressed: the
-page's only addition is the handler that dynamically imports `globe-ui.js`,
-which then loads the vendored `vendor/globe.gl-2.46.2.min.js` and Earth
-texture (see `vendor/PROVENANCE.md` for versions, hashes, and licenses).
-Vendoring keeps the CSP unchanged and keeps a third-party CDN out of the
-serving path. Those filenames carry a version or a content hash, so `_headers`
-can cache them `immutable` without ever stranding a browser on a stale copy.
+"View live globe" opens a 3D globe of everyone here right now. It leads the
+page, under a globe glyph. Nothing globe-related is downloaded until that
+button is pressed: the page's only addition is the handler that dynamically
+imports `globe-ui.js`, which then loads the vendored
+`vendor/globe.gl-2.46.2.min.js` and Earth texture (see
+`vendor/PROVENANCE.md` for versions, hashes, and licenses). Vendoring keeps
+the CSP unchanged and keeps a third-party CDN out of the serving path. Those
+filenames carry a version or a content hash, so `_headers` can cache them
+`immutable` without ever stranding a browser on a stale copy.
 
-Opening the globe makes you a viewer only. An unticked "Share my approximate
-area on the globe" checkbox is the only thing that publishes a pin, and:
+Opening it also puts you on it. There is no tick-box gate: the button
+publishes your own approximate area, and a "Stop sharing my area" button in the
+overlay takes it off again immediately. Closing the overlay or leaving the page
+removes it too, and an opt-out is remembered for as long as the page stays
+open. What makes publishing by default defensible is not a consent dialog, it
+is how little is published — the roll-up floor below stops a lone visitor from
+ever becoming a city-sized pin, and it applies to everyone.
 
 **What a pin actually is.** It is an approximate point on a public map, worked
 out from the IP address of the connection. The response carries no city,
@@ -92,8 +98,8 @@ than dressed up as "no location is shared".
   traffic meter when it is large, so the wire format has no way to carry one.
 - Presence lives in one Durable Object's memory with a 5-minute TTL and is never
   written to storage, KV, or logs; expired entries are swept on every request.
-  Unticking the box, closing the overlay, or leaving the page removes the pin
-  immediately, and an abandoned tab ages out within the TTL. The public
+  Pressing "Stop sharing my area", closing the overlay, or leaving the page
+  removes the pin immediately, and an abandoned tab ages out within the TTL. The public
   aggregate is edge-cached for 10 seconds, so a removal can take that long to
   disappear from other people's screens.
 - The only per-visitor value is a random `crypto.randomUUID()` held in page

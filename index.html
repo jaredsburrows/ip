@@ -77,6 +77,15 @@
   <body>
     <h1>IP Address Info</h1>
 
+    <h2 id="globe-heading">🌍 Live globe</h2>
+    <p class="note">Opens a 3D globe of everyone here right now, and puts your own approximate
+      area on it. The point is never finer than ~111&nbsp;km, and is merged into a far larger
+      region unless at least 5 people are sharing near you. &ldquo;Stop sharing my area&rdquo;
+      inside the globe takes it off, and it disappears within 5 minutes of you leaving anyway.
+      Nothing globe-related is downloaded until you press the button.</p>
+    <button id="globe-button" type="button">🌍 View live globe</button>
+    <p class="note" id="globe-status" aria-live="polite"></p>
+
     <h2>Location</h2>
     <p id="location-summary" aria-live="polite">Detecting location…</p>
     <p id="location-source" class="note">Estimated from your public IP. VPNs, proxies, and mobile networks can affect this location.</p>
@@ -118,13 +127,6 @@
     <p id="geo-attribution" class="note" hidden>City lookup powered by
       <a href="https://www.geoapify.com/">Geoapify</a> and
       <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>.</p>
-
-    <h2 id="globe-heading">Live globe (opt-in)</h2>
-    <p class="note">Opens a 3D globe showing everyone who has chosen to share an approximate
-      area. Opening it makes you a viewer only &mdash; a separate, unticked checkbox inside
-      publishes your own pin. Nothing globe-related is downloaded until you press the button.</p>
-    <button id="globe-button" type="button">View live globe</button>
-    <p class="note" id="globe-status" aria-live="polite"></p>
 
     <h2 id="response-headers-heading">Response headers</h2>
     <p class="note">HTTP response headers for this page, read via a same-origin request.</p>
