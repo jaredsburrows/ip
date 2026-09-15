@@ -192,11 +192,13 @@ test("the share opt-in is unticked, unstored, and reversible", () => {
   assert.equal(/localStorage|sessionStorage|document\.cookie|indexedDB/.test(uiCode), false);
   assert.match(ui, /shareToken = crypto\.randomUUID\(\)/);
 
-  // Untick, close, and page-away all remove the pin.
-  for (const trigger of [/checkbox\.checked\)[\s\S]{0,80}stopSharing/, /addEventListener\("close"[\s\S]{0,220}stopSharing/,
-    /addEventListener\("pagehide", \(\) => stopSharing/]) {
-    assert.match(ui, trigger);
-  }
+  // Untick, close, and page-away all remove the pin. The close handler is
+  // matched as a whole block rather than within a character budget, so adding
+  // a comment to it can never quietly turn this assertion off.
+  const closeHandler = ui.match(/dialog\.addEventListener\("close", \(\) => \{([\s\S]*?)\n {2}\}\);/)[1];
+  assert.match(closeHandler, /stopSharing/);
+  assert.match(ui, /checkbox\.checked\)[\s\S]{0,80}stopSharing/);
+  assert.match(ui, /addEventListener\("pagehide", \(\) => stopSharing/);
   assert.match(ui, /method: "DELETE"[\s\S]{0,160}keepalive: true/);
 });
 
@@ -226,16 +228,120 @@ test("the share disclosure describes what is published, not just what is omitted
 });
 
 /**
- * Runs globe-ui.js in a sandbox and hands back the internals a share needs.
- * Two edits, both asserted below: `export` is dropped (a script, not a module)
- * and `import.meta.url` becomes a literal, since only a module has one.
+ * Runs globe-ui.js in a sandbox and hands back the named internals. Two edits,
+ * both asserted here: `export` is dropped (a script, not a module) and
+ * `import.meta.url` becomes a literal, since only a module has one.
  */
-function shareHarness(fetchImpl) {
+function loadUi(context, expose) {
   const source = read("globe-ui.js")
     .replace(/^export /gm, "")
     .replace(/import\.meta\.url/g, JSON.stringify("https://ip.example/globe-ui.js"));
   assert.equal(/\bexport\b|import\.meta/.test(source), false);
+  vm.createContext(context);
+  return vm.runInContext(`${source}\n;(${expose});`, context);
+}
 
+/** The slice of a DOM node globe-ui.js actually touches. */
+function fakeNode(tag) {
+  const node = {
+    tagName: tag,
+    children: [],
+    listeners: {},
+    attributes: {},
+    textContent: "",
+    className: "",
+    // The size a full-viewport dialog reports once showModal() has laid it
+    // out — the number resize() is supposed to hand to the renderer.
+    clientWidth: 1280,
+    clientHeight: 720,
+    addEventListener(name, fn) { (node.listeners[name] ??= []).push(fn); },
+    setAttribute(name, value) { node.attributes[name] = value; },
+    append(...kids) { node.children.push(...kids); },
+    dispatch(name) { for (const fn of node.listeners[name] ?? []) fn(); },
+    showModal() { node.open = true; },
+    close() { node.open = false; node.dispatch("close"); },
+  };
+  return node;
+}
+
+/** Stands in for the vendored UMD bundle, recording what it is asked to do. */
+function fakeGlobe() {
+  const controls = {};
+  const globe = { mountedOn: null, running: false, props: {}, animation: [], controls: () => controls };
+  for (const name of ["backgroundColor", "globeImageUrl", "pointsData", "pointLat", "pointLng",
+    "pointColor", "pointAltitude", "pointRadius", "pointLabel", "width", "height"]) {
+    globe[name] = (value) => { globe.props[name] = value; return globe; };
+  }
+  globe.resumeAnimation = () => { globe.running = true; globe.animation.push("resume"); return globe; };
+  globe.pauseAnimation = () => { globe.running = false; globe.animation.push("pause"); return globe; };
+  return globe;
+}
+
+/**
+ * Opens the overlay against a fake DOM and a fake globe.gl.
+ *
+ * This is NOT pixel verification — node cannot rasterise WebGL, so nothing
+ * here proves the Earth is painted. It is the closest honest proxy: the
+ * renderer is mounted on the stage, is given a non-zero size and the vendored
+ * texture, and is still running when open() returns. The bug this catches
+ * (T17) failed exactly that last assertion in a real browser too.
+ */
+async function openHarness(fetchImpl) {
+  const globe = fakeGlobe();
+  const timers = [];
+  const document = {
+    createElement: (tag) => fakeNode(tag),
+    head: fakeNode("head"),
+    body: fakeNode("body"),
+  };
+  const context = {
+    URL,
+    document,
+    window: { matchMedia: () => ({ matches: true }), addEventListener() {} },
+    crypto: { randomUUID: () => "11111111-2222-4333-8444-555555555555" },
+    fetch: fetchImpl ?? (async () => new Response(JSON.stringify({ points: [], ttlSeconds: 300 }), { status: 200 })),
+    setInterval: (fn, ms) => timers.push({ fn, ms }),
+    clearInterval: (id) => { if (id) timers[id - 1] = null; },
+  };
+  // Appending the <script> is what "loads" the bundle, exactly as a browser
+  // would: the tag exposes window.Globe and then fires load.
+  document.head.append = (node) => {
+    context.window.Globe = function (stage) { globe.mountedOn = stage; return globe; };
+    node.dispatch("load");
+  };
+
+  const internals = loadUi(context, "{ open, overlay: () => overlay }");
+  await internals.open();
+  return { globe, overlay: internals.overlay(), scriptSrc: document.head.children, timers: () => timers.filter(Boolean) };
+}
+
+test("opening the globe leaves the renderer sized, textured and running", async () => {
+  const { globe, overlay } = await openHarness();
+
+  assert.equal(globe.mountedOn, overlay.stage, "the renderer must be mounted on the visible stage");
+  // A 0x0 canvas renders black just as reliably as a stopped loop does.
+  assert.deepEqual([globe.props.width, globe.props.height], [1280, 720]);
+  assert.equal(globe.props.globeImageUrl, "https://ip.example/vendor/earth-blue-marble-2048-c8fd8b5a.jpg");
+  // T17: open() resumed the animation and then startPolling() -> stopPolling()
+  // paused it again one statement later, so no frame was ever drawn. Order
+  // matters, not just the final state.
+  assert.deepEqual(globe.animation, ["resume"]);
+  assert.equal(globe.running, true, "the render loop must still be running when open() returns");
+});
+
+test("closing the globe stops the render loop, and re-opening starts it again", async () => {
+  const { globe, overlay } = await openHarness();
+
+  overlay.dialog.close();
+  // Nothing on screen, so nothing should be burning frames.
+  assert.equal(globe.running, false);
+
+  overlay.dialog.showModal();
+  globe.resumeAnimation();
+  assert.equal(globe.running, true);
+});
+
+function shareHarness(fetchImpl) {
   const timers = [];
   const context = {
     URL,
@@ -244,9 +350,7 @@ function shareHarness(fetchImpl) {
     setInterval: (fn, ms) => timers.push({ fn, ms }),
     clearInterval: (id) => { if (id) timers[id - 1] = null; },
   };
-  vm.createContext(context);
-  const internals = vm.runInContext(
-    `${source}\n;({ startSharing, setOverlay(value) { overlay = value; } });`, context);
+  const internals = loadUi(context, "{ startSharing, setOverlay(value) { overlay = value; } }");
   return { internals, timers: () => timers.filter(Boolean) };
 }
 

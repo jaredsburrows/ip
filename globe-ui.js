@@ -141,6 +141,8 @@ function buildOverlay() {
   // `dialog` gives Escape-to-close and focus handling without any extra code.
   dialog.addEventListener("close", () => {
     stopPolling();
+    // Nothing is on screen now, so nothing should be drawing frames.
+    globe?.pauseAnimation();
     // Closing the globe is also an opt-out: re-opening starts unshared.
     checkbox.checked = false;
     stopSharing("");
@@ -277,10 +279,16 @@ function startPolling() {
   pollTimer = setInterval(poll, POLL_MS);
 }
 
+/**
+ * Stops the read loop, and only that. Pausing the renderer from here was the
+ * blank-globe bug (T17): startPolling() begins by stopping the previous loop,
+ * so open()'s `resumeAnimation(); startPolling();` killed the render loop one
+ * statement after starting it and no frame was ever drawn. Whether the canvas
+ * is visible is the dialog's business, so the dialog pauses it.
+ */
 function stopPolling() {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = null;
-  globe?.pauseAnimation();
 }
 
 /** Opens the overlay, loading the library and texture on first use. */
