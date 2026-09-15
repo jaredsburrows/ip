@@ -46,12 +46,14 @@ function json(data, status, request) {
 }
 
 export default {
-  async fetch(request, env = {}) {
+  async fetch(request, env = {}, ctx) {
     const url = new URL(request.url);
     const { pathname } = url;
 
     // Live globe presence: same-origin only, no CORS, handled in globe.js.
-    if (pathname.startsWith("/api/globe/")) return handleGlobe(request, env, url);
+    // `ctx` is passed through so the positions aggregate can be written to the
+    // edge cache without holding the response open.
+    if (pathname.startsWith("/api/globe/")) return handleGlobe(request, env, url, ctx);
 
     // Defensive: asset routing already keeps unknown paths away from here.
     if (pathname !== API_PATH && pathname !== LOCATION_PATH) {

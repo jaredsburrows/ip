@@ -213,11 +213,11 @@ function resize() {
   globe.width(overlay.stage.clientWidth).height(overlay.stage.clientHeight);
 }
 
+// Counts arrive as ranges ("5-9"), never as integers, so there is no exact
+// head count to add up here — by design, not by omission.
 function describe(points) {
-  const people = points.reduce((total, point) => total + point.count, 0);
-  if (people === 0) return "No one is sharing right now — tick the box to be the first pin.";
-  const pins = points.length === 1 ? "1 area" : `${points.length} areas`;
-  return `${people === 1 ? "1 person" : `${people} people`} sharing, in ${pins}.`;
+  if (points.length === 0) return "No one is sharing right now — tick the box to be the first pin.";
+  return points.length === 1 ? "1 area is sharing right now." : `${points.length} areas are sharing right now.`;
 }
 
 async function poll() {
@@ -263,9 +263,9 @@ export async function open() {
       .pointColor(() => "#ff5252")
       .pointAltitude(0.02)
       .pointRadius(0.6)
-      // Counts only. A pin never carries a place name, and never could: the
-      // server does not know one to send.
-      .pointLabel((point) => (point.count === 1 ? "1 person here" : `${point.count} people here`));
+      // A bucket, never a head count, and never a place name: the server has
+      // neither to send.
+      .pointLabel((point) => `${point.count} people in this area`);
 
     const controls = globe.controls();
     controls.autoRotate = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;

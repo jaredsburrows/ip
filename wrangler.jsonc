@@ -44,12 +44,21 @@
       "simple": { "limit": 60, "period": 60 }
     },
     {
-      // Belt-and-braces on the public globe write path only. The design does
-      // not depend on it; the real bounds are the server-derived coordinates
-      // and the caps in globe.js.
+      // Belt-and-braces on the public globe write paths (POST and DELETE). The
+      // design does not depend on it; the real bounds are the server-derived
+      // coordinates and the caps in globe.js.
       "name": "GLOBE_LIMITER",
       "namespace_id": "2026091402",
       "simple": { "limit": 30, "period": 60 }
+    },
+    {
+      // Reads are bounded too, on a deliberately generous budget: one viewer
+      // polls twice a minute, so this is roughly 120 concurrent viewers behind
+      // one address before anyone is refused. Most polls never get this far —
+      // they are answered by the 10 s edge cache in globe.js.
+      "name": "GLOBE_READ_LIMITER",
+      "namespace_id": "2026091403",
+      "simple": { "limit": 240, "period": 60 }
     }
   ],
   "assets": {
