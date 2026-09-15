@@ -61,8 +61,11 @@ filenames carry a version or a content hash, so `_headers` can cache them
 `immutable` without ever stranding a browser on a stale copy.
 
 Opening it also puts you on it. There is no tick-box gate: the button
-publishes your own approximate area, and a "Stop sharing my area" button in the
-overlay takes it off again immediately. Closing the overlay or leaving the page
+publishes your own approximate area, and closing the overlay takes it off again
+immediately — sharing is scoped to the globe being open, and the close handler
+and `pagehide` both send the delete. The overlay's footer is one sentence of
+notice, the full disclosure a press away in a collapsed `<details>`, and a
+Close button. Closing the overlay or leaving the page
 removes it too, and an opt-out is remembered for as long as the page stays
 open. What makes publishing by default defensible is not a consent dialog, it
 is how little is published — the roll-up floor below stops a lone visitor from
@@ -98,13 +101,21 @@ than dressed up as "no location is shared".
   traffic meter when it is large, so the wire format has no way to carry one.
 - Presence lives in one Durable Object's memory with a 5-minute TTL and is never
   written to storage, KV, or logs; expired entries are swept on every request.
-  Pressing "Stop sharing my area", closing the overlay, or leaving the page
-  removes the pin immediately, and an abandoned tab ages out within the TTL. The public
+  Closing the overlay or leaving the page removes the pin immediately, and an
+  abandoned tab ages out within the TTL. The public
   aggregate is edge-cached for 10 seconds, so a removal can take that long to
   disappear from other people's screens.
 - The only per-visitor value is a random `crypto.randomUUID()` held in page
   memory (never `localStorage`, `sessionStorage`, or a cookie) to dedupe
   heartbeats.
+- **Your own marker is yours alone.** The globe also draws a "You" marker from
+  the IP-based coordinates the page already received from `/api/info` and
+  already shows in the Network table — so a visitor whose pin has been rolled
+  up into a continent-sized cell can still see where they actually are, instead
+  of reading the cell's centre as their position. It is drawn in the browser
+  and goes nowhere else: the globe client's only request body is `{token}`, so
+  those coordinates never reach the Worker, the Durable Object, or another
+  visitor. No geolocation from the edge simply means no marker.
 
 `GET /api/globe/positions` is public and read-only; `POST`/`DELETE
 /api/globe/presence` take a token and nothing else. Abuse is bounded

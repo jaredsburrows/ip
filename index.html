@@ -80,9 +80,10 @@
     <h2 id="globe-heading">🌍 Live globe</h2>
     <p class="note">Opens a 3D globe of everyone here right now, and puts your own approximate
       area on it. The point is never finer than ~111&nbsp;km, and is merged into a far larger
-      region unless at least 5 people are sharing near you. &ldquo;Stop sharing my area&rdquo;
-      inside the globe takes it off, and it disappears within 5 minutes of you leaving anyway.
-      Nothing globe-related is downloaded until you press the button.</p>
+      region unless at least 5 people are sharing near you. Your own &ldquo;You&rdquo; marker is
+      drawn from the IP-based coordinates below, in your browser only &mdash; nobody else sees it.
+      Closing the globe takes your area off it, and it disappears within 5 minutes of you leaving
+      anyway. Nothing globe-related is downloaded until you press the button.</p>
     <button id="globe-button" type="button">🌍 View live globe</button>
     <p class="note" id="globe-status" aria-live="polite"></p>
 
@@ -547,7 +548,11 @@
 
       /* ---------- Live globe (nothing loads until the button is clicked) ---------- */
 
-      function initGlobeButton() {
+      // `ownCoordinates` is read at click time (not at wiring time) so a slow
+      // /api/info still supplies them. They are handed to the overlay purely to
+      // be drawn there: globe-ui.js sends nothing but a random token, so these
+      // never leave the browser.
+      function initGlobeButton(ownCoordinates) {
         const button = document.getElementById("globe-button");
         const status = document.getElementById("globe-status");
 
@@ -559,7 +564,7 @@
             // vendored globe.gl bundle, or the Earth texture. Keep it that way:
             // no preload, no prefetch, no top-level import.
             const globe = await import("./globe-ui.js");
-            await globe.open();
+            await globe.open({ self: ownCoordinates() });
             status.textContent = "";
           } catch {
             status.textContent = "The globe could not be loaded.";
@@ -610,7 +615,7 @@
       loadIpFamilies();
       loadClientHints();
       initGeolocation();
-      initGlobeButton();
+      initGlobeButton(() => ipCoords);
       loadResponseHeaders();
     </script>
   </body>
