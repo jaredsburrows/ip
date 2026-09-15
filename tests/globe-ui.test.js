@@ -199,23 +199,62 @@ test("a year of immutable is promised only for URLs that carry their own bytes",
   }
 });
 
-test("the share opt-in is unticked, unstored, and reversible", () => {
-  // Strict opt-in: the checkbox is created unchecked and nothing else sets it.
-  assert.match(ui, /checkbox\.checked = false;/);
-  assert.deepEqual(ui.match(/checkbox\.checked = (?!false)/g), null);
+test("sharing is unstored and reversible, and no tick-box gates it", () => {
+  // T19: the gate is gone, so nothing may reintroduce one by the back door.
+  assert.equal(/checkbox|type = "checkbox"/.test(uiCode), false);
 
-  // The session token lives in page memory only.
+  // The session token lives in page memory only. So does the opt-out: a
+  // remembered refusal must not become a tracking surface of its own.
   assert.equal(/localStorage|sessionStorage|document\.cookie|indexedDB/.test(uiCode), false);
   assert.match(ui, /shareToken = crypto\.randomUUID\(\)/);
+  assert.match(ui, /let optedOut = false;/);
 
-  // Untick, close, and page-away all remove the pin. The close handler is
+  // Opt out, close, and page-away all remove the pin. The close handler is
   // matched as a whole block rather than within a character budget, so adding
   // a comment to it can never quietly turn this assertion off.
   const closeHandler = ui.match(/dialog\.addEventListener\("close", \(\) => \{([\s\S]*?)\n {2}\}\);/)[1];
   assert.match(closeHandler, /stopSharing/);
-  assert.match(ui, /checkbox\.checked\)[\s\S]{0,80}stopSharing/);
   assert.match(ui, /addEventListener\("pagehide", \(\) => stopSharing/);
   assert.match(ui, /method: "DELETE"[\s\S]{0,160}keepalive: true/);
+});
+
+test("opening the globe publishes, and the opt-out takes it straight back off", async () => {
+  const harness = await openHarness();
+
+  // No gate: the pin is published by the act of opening the globe.
+  assert.ok(harness.calls.includes("POST /api/globe/presence"), harness.calls.join(", "));
+  assert.equal(harness.overlay.shareStatus.textContent, "Your area is on the globe.");
+  assert.equal(harness.overlay.shareButton.textContent, "Stop sharing my area");
+
+  // ...and the way out is one visible press, on the DELETE path.
+  harness.overlay.shareButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(harness.calls.includes("DELETE /api/globe/presence"));
+  assert.match(harness.overlay.shareStatus.textContent, /taken off the globe/);
+  assert.equal(harness.overlay.shareButton.textContent, "Share my area");
+  // 30 s is the read poll, which keeps running because the globe is still on
+  // screen; the 60 s heartbeat is the one that must be gone.
+  assert.deepEqual(harness.timers().map((timer) => timer.ms), [30000], "no heartbeat may outlive the opt-out");
+
+  // A refusal outlives the overlay: closing and re-opening must not quietly
+  // put someone back on the map.
+  harness.overlay.dialog.close();
+  const before = harness.calls.filter((call) => call.startsWith("POST")).length;
+  await harness.open();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.calls.filter((call) => call.startsWith("POST")).length, before);
+  assert.equal(harness.overlay.shareButton.textContent, "Share my area");
+});
+
+test("a 200 with no cadence is a failure, not an interval of NaN", async () => {
+  const harness = await openHarness(async (path) => (path === "/api/globe/presence"
+    ? new Response("not json", { status: 200 })
+    : new Response(JSON.stringify({ points: [], ttlSeconds: 300 }), { status: 200 })));
+
+  // Every visitor runs this path now, so a malformed 200 must retry on a known
+  // interval rather than arm setInterval(fn, NaN) and never fire again.
+  assert.deepEqual(harness.timers().map((timer) => timer.ms), [30000, 15000]);
+  assert.match(harness.overlay.shareStatus.textContent, /retrying/);
 });
 
 test("the client can never submit a position", () => {
@@ -230,6 +269,10 @@ test("the client can never submit a position", () => {
 
 test("the share disclosure describes what is published, not just what is omitted", () => {
   const disclosure = ui.match(/disclosure\.textContent = ([\s\S]*?);\n/)[1];
+  // With no tick-box in front of it, the disclosure has to say that opening
+  // the globe is itself the act that publishes, and how to undo it.
+  assert.match(disclosure, /Opening the globe puts your approximate area on it/);
+  assert.match(disclosure, /Stop sharing my area/);
   // GSEC-2: a published point IS a country, and usually a region, to anyone
   // who cares to look it up. The old text promised the opposite ("never a
   // street, city, or country name"), so consent was given on a false premise.
@@ -302,9 +345,14 @@ function fakeGlobe() {
  * texture, and is still running when open() returns. The bug this catches
  * (T17) failed exactly that last assertion in a real browser too.
  */
-async function openHarness(fetchImpl) {
+const respondOk = async (path) => (path === "/api/globe/presence"
+  ? new Response(JSON.stringify({ ok: true, ttlSeconds: 300, heartbeatSeconds: 60 }), { status: 200 })
+  : new Response(JSON.stringify({ points: [], ttlSeconds: 300 }), { status: 200 }));
+
+async function openHarness(respond = respondOk) {
   const globe = fakeGlobe();
   const timers = [];
+  const calls = [];
   const document = {
     createElement: (tag) => fakeNode(tag),
     head: fakeNode("head"),
@@ -315,7 +363,10 @@ async function openHarness(fetchImpl) {
     document,
     window: { matchMedia: () => ({ matches: true }), addEventListener() {} },
     crypto: { randomUUID: () => "11111111-2222-4333-8444-555555555555" },
-    fetch: fetchImpl ?? (async () => new Response(JSON.stringify({ points: [], ttlSeconds: 300 }), { status: 200 })),
+    fetch: async (path, options = {}) => {
+      calls.push(`${options.method ?? "GET"} ${path}`);
+      return respond(path, options);
+    },
     setInterval: (fn, ms) => timers.push({ fn, ms }),
     clearInterval: (id) => { if (id) timers[id - 1] = null; },
   };
@@ -328,7 +379,16 @@ async function openHarness(fetchImpl) {
 
   const internals = loadUi(context, "{ open, overlay: () => overlay }");
   await internals.open();
-  return { globe, overlay: internals.overlay(), scriptSrc: document.head.children, timers: () => timers.filter(Boolean) };
+  // open() fires the first heartbeat without awaiting it, so let the
+  // already-resolved fetch chain drain before anything is asserted.
+  await new Promise((resolve) => setImmediate(resolve));
+  return {
+    globe,
+    calls,
+    open: internals.open,
+    overlay: internals.overlay(),
+    timers: () => timers.filter(Boolean),
+  };
 }
 
 test("opening the globe leaves the renderer sized, textured and running", async () => {
@@ -374,7 +434,7 @@ const fakeOverlay = () => ({
   dialog: { open: true },
   stage: {},
   status: { textContent: "" },
-  checkbox: { checked: true },
+  shareButton: { textContent: "" },
   shareStatus: { textContent: "" },
 });
 
@@ -401,7 +461,7 @@ test("a refused first heartbeat schedules a retry instead of stopping in silence
   // the retry interval rather than running alongside it.
   await timers()[0].fn();
   assert.equal(attempts, 2);
-  assert.equal(overlay.shareStatus.textContent, "You are on the globe. Untick to remove your pin.");
+  assert.equal(overlay.shareStatus.textContent, "Your area is on the globe.");
   assert.deepEqual(timers().map((timer) => timer.ms), [60000]);
 });
 
@@ -417,7 +477,8 @@ test("a heartbeat that cannot reach the globe keeps trying, and says so", async 
     await internals.startSharing();
     assert.equal(timers().length, 1);
     assert.match(overlay.shareStatus.textContent, /retrying/);
-    assert.equal(overlay.checkbox.checked, true, "the box only unticks when retrying cannot help");
+    assert.equal(overlay.shareButton.textContent, "Stop sharing my area",
+      "a retryable failure keeps the share, and the control keeps saying so");
   }
 });
 
@@ -430,6 +491,6 @@ test("no approximate area means the share stops, with no retry left running", as
   // Retrying cannot conjure a location, so this is the one failure that ends
   // the share — and it must not leave a timer promising otherwise.
   assert.deepEqual(timers(), []);
-  assert.equal(overlay.checkbox.checked, false);
+  assert.equal(overlay.shareButton.textContent, "Share my area");
   assert.match(overlay.shareStatus.textContent, /nothing to share/);
 });
