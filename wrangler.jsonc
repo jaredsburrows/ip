@@ -16,6 +16,17 @@
       { "name": "GLOBE", "class_name": "GlobePresence" }
     ]
   },
+  // ROLLBACK RECIPE — read this before reverting anything in this file.
+  // A deployed migration is append-only: it must stay here, with its tag, for
+  // as long as the class exists. Deleting or renumbering this entry (which is
+  // what a plain `git revert` of the commit that added it does) makes
+  // `wrangler deploy` fail outright, which blocks EVERY deploy from this repo
+  // — including unrelated fixes to /api/info — and dashboard rollback cannot
+  // cross a lifecycle change either.
+  // To retire the globe, in ONE commit: remove the GLOBE binding above, remove
+  // the GlobePresence export from worker.js, and APPEND
+  //   { "tag": "globe-presence-v2", "deleted_classes": ["GlobePresence"] }
+  // to the end of this array. Never remove globe-presence-v1.
   "migrations": [
     { "tag": "globe-presence-v1", "new_sqlite_classes": ["GlobePresence"] }
   ],
