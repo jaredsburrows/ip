@@ -43,7 +43,7 @@ jobs:
         run: npm test
 
       - name: Configure JDK ${{ env.JAVA_VERSION }}
-        uses: actions/setup-java@v6.2.0
+        uses: actions/setup-java@v6.3.0
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
